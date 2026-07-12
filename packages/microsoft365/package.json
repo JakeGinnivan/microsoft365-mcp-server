@@ -68,11 +68,11 @@
     "@azure/identity": "^4.13.2",
     "@sapientsai/document-extract": "workspace:*",
     "dotenv": "^17.4.2",
-    "fastmcp": "^4.16.8",
-    "functype": "1.4.4",
+    "fastmcp": "^4.16.13",
+    "functype": "^1.9.0",
     "functype-log": "^1.9.0",
     "jsonwebtoken": "^9.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@sapientsai/ms-graph-core": "workspace:*",

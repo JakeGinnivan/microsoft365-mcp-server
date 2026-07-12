@@ -40,4 +40,5 @@ publicHoistPattern:
   - "*rimraf*"
   - "*cross-env*"
 minimumReleaseAgeExclude:
-  - somamcp@1.1.0
+  - somamcp@1.1.0 || 1.3.2
+  - fastmcp@4.17.1
