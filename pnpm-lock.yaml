@@ -94,6 +94,9 @@ importers:
       '@azure/identity':
         specifier: ^4.13.1
         version: 4.13.1(supports-color@7.2.0)
+      '@sapientsai/document-extract':
+        specifier: workspace:*
+        version: link:../extract
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2

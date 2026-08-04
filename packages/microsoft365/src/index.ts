@@ -78,6 +78,7 @@ import {
   listTodoLists,
   listTodoTasks,
   listUsers,
+  readDocument,
   searchContacts,
   searchFiles,
   searchMessages,
@@ -631,6 +632,31 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     }),
     execute: async (params) => unwrapResult(await downloadFile(params)),
     domain: "files",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "read_document",
+    description:
+      "Download a file from SharePoint or OneDrive and return its readable text content. Supports DOCX, PDF, XLSX, " +
+      "and text-based files. Use instead of download_file when you need document contents. Pair with " +
+      "search_site_files (SharePoint) or search_files (OneDrive) to get IDs, then pass " +
+      "/drives/{driveId}/items/{itemId}/content or /me/drive/items/{id}/content. Text extraction only, no OCR: " +
+      "scanned PDFs return no text.",
+    parameters: z.object({
+      path: z.string().describe("Graph path to the file content endpoint, ending in /content"),
+      api_version: z.enum(["v1.0", "beta"]).optional().describe("Graph API version"),
+      format: z.string().optional().describe("Optional conversion format (e.g. 'pdf'), for supported types only"),
+      max_chars: z
+        .number()
+        .int()
+        .min(1000)
+        .max(200000)
+        .optional()
+        .describe("Max characters to return (1000-200000, default 50000); content beyond is truncated"),
+    }),
+    execute: async (params) => unwrapResult(await readDocument(params)),
+    domain: "rag",
     readOnly: true,
     annotations: { readOnlyHint: true },
   },

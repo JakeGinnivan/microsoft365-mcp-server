@@ -5,7 +5,7 @@ import { filterTools, PRESETS, TOOL_METADATA } from "../src/tools/tool-registry"
 describe("tool-registry", () => {
   describe("PRESETS", () => {
     it("should define expected preset names", () => {
-      expect(Object.keys(PRESETS)).toEqual(["personal", "collaboration", "productivity", "all"])
+      expect(Object.keys(PRESETS)).toEqual(["personal", "collaboration", "productivity", "rag", "all"])
     })
 
     it("personal preset should include mail, calendar, contacts, todo, files, onenote", () => {
@@ -47,6 +47,24 @@ describe("tool-registry", () => {
       const result = filterTools({})
       const nonOrgTools = TOOL_METADATA.filter((m) => !m.orgOnly)
       expect(result.size).toBe(nonOrgTools.length)
+    })
+
+    // read_document carries the three heavy parsers, so which deployments expose it matters.
+    it("exposes read_document by default, hides it under an unrelated preset, includes it under rag", () => {
+      expect(filterTools({}).has("read_document")).toBe(true)
+      expect(filterTools({ presets: ["personal"] }).has("read_document")).toBe(false)
+      expect(filterTools({ presets: ["rag"] }).has("read_document")).toBe(true)
+    })
+
+    // MS365_PRESETS="" splits to [""], which is length 1 and therefore engages the preset filter
+    // against a preset name that matches nothing — collapsing the surface to auth alone. Pre-existing
+    // behavior, pinned here because the unset and named-preset cases both miss it.
+    it("collapses to auth-only when a preset string is empty", () => {
+      const result = filterTools({ presets: [""] })
+      for (const name of result) {
+        expect(TOOL_METADATA.find((m) => m.name === name)?.domain).toBe("auth")
+      }
+      expect(result.has("read_document")).toBe(false)
     })
 
     it("should return all tools including org-only when orgMode is enabled", () => {

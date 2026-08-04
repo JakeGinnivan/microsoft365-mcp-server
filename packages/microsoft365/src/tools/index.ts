@@ -58,6 +58,7 @@ export {
   updatePlannerTask,
   updatePlannerTaskDetails,
 } from "./planner-tools"
+export { readDocument } from "./read-document-tools"
 export { getSite, listSiteDrives, listSiteItems, listSites, searchSiteFiles } from "./sharepoint-tools"
 export { listChannelMessages, listChannels, listTeams, sendChannelMessage } from "./teams-tools"
 export { createTodoTask, listTodoLists, listTodoTasks, updateTodoTask } from "./todo-tools"

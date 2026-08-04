@@ -12,6 +12,7 @@ export type ToolDomain =
   | "onenote"
   | "todo"
   | "query"
+  | "rag"
 
 export type TransportMode = "stdio" | "httpStream"
 
@@ -27,6 +28,7 @@ export const PRESETS: Record<string, ReadonlyArray<ToolDomain>> = {
   personal: ["mail", "calendar", "contacts", "todo", "files", "onenote"],
   collaboration: ["chats", "teams", "planner", "groups"],
   productivity: ["mail", "calendar", "todo"],
+  rag: ["rag", "files", "query"],
   all: [
     "auth",
     "mail",
@@ -41,6 +43,7 @@ export const PRESETS: Record<string, ReadonlyArray<ToolDomain>> = {
     "onenote",
     "todo",
     "query",
+    "rag",
   ],
 }
 
@@ -135,6 +138,8 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "update_todo_task", domain: "todo", readOnly: false, orgOnly: false },
   // Query
   { name: "graph_query", domain: "query", readOnly: false, orgOnly: false },
+  // RAG
+  { name: "read_document", domain: "rag", readOnly: true, orgOnly: false },
 ]
 
 export type ToolFilterConfig = {
