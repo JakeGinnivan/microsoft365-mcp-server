@@ -205,6 +205,7 @@ Named bundles of tool domains:
 ```bash
 MS365_PRESETS=personal                    # just personal tools
 MS365_PRESETS=personal,collaboration      # personal + team tools
+MS365_PRESETS=rag                         # read_document + files + graph_query
 ```
 
 If not set, all tools are registered.
@@ -373,27 +374,28 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 
 ## Environment Variables
 
-| Variable               | Description                                                                             | Default             |
-| ---------------------- | --------------------------------------------------------------------------------------- | ------------------- |
-| `MS365_AUTH_MODE`      | Auth mode: `interactive`, `certificate`, `client-secret`, `client-token`, `oauth-proxy` | `interactive`       |
-| `MS365_TENANT_ID`      | Azure AD tenant ID                                                                      | `common`            |
-| `MS365_CLIENT_ID`      | Azure AD application (client) ID                                                        | --                  |
-| `MS365_CLIENT_SECRET`  | Client secret (for `client-secret` and `oauth-proxy` modes)                             | --                  |
-| `MS365_CERT_PATH`      | Certificate path (for `certificate` mode)                                               | --                  |
-| `MS365_CERT_PASSWORD`  | Certificate password (optional)                                                         | --                  |
-| `MS365_ACCESS_TOKEN`   | Initial access token (for `client-token` mode)                                          | --                  |
-| `MS365_OAUTH_BASE_URL` | Base URL for OAuth proxy mode                                                           | --                  |
-| `MS365_GRAPH_VERSION`  | Graph API version: `v1.0` or `beta`                                                     | `v1.0`              |
-| `TRANSPORT_TYPE`       | Transport: `stdio` or `httpStream`                                                      | `stdio`             |
-| `PORT`                 | HTTP server port                                                                        | `3000`              |
-| `HOST`                 | HTTP server host                                                                        | `127.0.0.1`         |
-| `MS365_PRESETS`        | Comma-separated presets: `personal`, `collaboration`, `productivity`, `all`             | -- (all tools)      |
-| `MS365_ENABLED_TOOLS`  | Regex pattern to filter tools                                                           | --                  |
-| `MS365_READ_ONLY`      | Hide write tools                                                                        | `false`             |
-| `MS365_ORG_MODE`       | Enable org-only tools (teams, chats, groups, planner)                                   | `false`             |
-| `MS365_REQUIRE_DRAFT`  | Hide all `send_*` mail tools; force the `create_*_draft` + `send_draft` flow            | `false`             |
-| `TOKEN_STORAGE_PATH`   | Directory for persistent OAuth token storage                                            | `/tmp/ms365-tokens` |
-| `FASTMCP_HOST`         | Bind address for HTTP server (set `0.0.0.0` in containers)                              | `localhost`         |
+| Variable                  | Description                                                                             | Default             |
+| ------------------------- | --------------------------------------------------------------------------------------- | ------------------- |
+| `MS365_AUTH_MODE`         | Auth mode: `interactive`, `certificate`, `client-secret`, `client-token`, `oauth-proxy` | `interactive`       |
+| `MS365_TENANT_ID`         | Azure AD tenant ID                                                                      | `common`            |
+| `MS365_CLIENT_ID`         | Azure AD application (client) ID                                                        | --                  |
+| `MS365_CLIENT_SECRET`     | Client secret (for `client-secret` and `oauth-proxy` modes)                             | --                  |
+| `MS365_CERT_PATH`         | Certificate path (for `certificate` mode)                                               | --                  |
+| `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                         | --                  |
+| `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                          | --                  |
+| `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                           | --                  |
+| `MS365_GRAPH_VERSION`     | Graph API version: `v1.0` or `beta`                                                     | `v1.0`              |
+| `TRANSPORT_TYPE`          | Transport: `stdio` or `httpStream`                                                      | `stdio`             |
+| `PORT`                    | HTTP server port                                                                        | `3000`              |
+| `HOST`                    | HTTP server host                                                                        | `127.0.0.1`         |
+| `MS365_PRESETS`           | Comma-separated presets: `personal`, `collaboration`, `productivity`, `rag`, `all`      | -- (all tools)      |
+| `MS365_MAX_EXTRACT_BYTES` | Ceiling over `read_document`'s per-format input caps, in bytes. Never raises them.      | -- (per-format)     |
+| `MS365_ENABLED_TOOLS`     | Regex pattern to filter tools                                                           | --                  |
+| `MS365_READ_ONLY`         | Hide write tools                                                                        | `false`             |
+| `MS365_ORG_MODE`          | Enable org-only tools (teams, chats, groups, planner)                                   | `false`             |
+| `MS365_REQUIRE_DRAFT`     | Hide all `send_*` mail tools; force the `create_*_draft` + `send_draft` flow            | `false`             |
+| `TOKEN_STORAGE_PATH`      | Directory for persistent OAuth token storage                                            | `/tmp/ms365-tokens` |
+| `FASTMCP_HOST`            | Bind address for HTTP server (set `0.0.0.0` in containers)                              | `localhost`         |
 
 ## Claude Desktop (Local Installation)
 
@@ -481,3 +483,25 @@ MIT
 ---
 
 **Sponsored by <a href="https://sapientsai.com/"><img src="https://sapientsai.com/images/logo.svg" alt="SapientsAI" width="20" style="vertical-align: middle;"> SapientsAI</a>** — Building agentic AI for businesses
+
+## Reading documents
+
+`read_document` returns the readable text of a SharePoint or OneDrive file — PDF, DOCX, XLSX, or
+anything text-based. Pair it with `search_site_files` (SharePoint, takes a `site_id`) or
+`search_files` (your own OneDrive) to get an item ID, then pass
+`/drives/{driveId}/items/{itemId}/content` or `/me/drive/items/{id}/content`.
+
+Known limits:
+
+1. **No OCR.** Extraction reads embedded text only, so a scanned PDF yields nothing. Fall back to
+   `download_file`.
+2. **Per-format input caps**, checked against the file's metadata before any download: 100 MB PDF,
+   50 MB DOCX, 25 MB XLSX, 25 MB text. These are not uniform because memory cost is not uniform —
+   a spreadsheet expands into a full workbook object model at roughly 10–20x its file size, which
+   is why XLSX is the tightest rather than PDF. `MS365_MAX_EXTRACT_BYTES` tightens all four at once
+   in a memory-constrained container; it is a ceiling and cannot raise a format above its default.
+   Over the cap, use `download_file` for a download URL instead.
+3. **Output is bounded separately** by `max_chars` (50,000 default, 200,000 max), with an explicit
+   truncation marker. This is unrelated to the input caps above — do not tune them as one number.
+4. **Discovery is split.** `search_files` is rooted at your own OneDrive and `search_site_files`
+   takes a `site_id`. Neither is a tenant-wide search.
