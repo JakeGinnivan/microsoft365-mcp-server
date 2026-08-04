@@ -7,6 +7,7 @@ import { authorizesWithApiKey } from "./auth/api-key-gate"
 import { createAppOnlyAuthStrategy } from "./auth/app-only-strategy"
 import { resolveServerRuntimeConfig, type ServerRuntimeConfig } from "./config"
 import { buildAiSearchTool } from "./tools/ai-search"
+import { buildDownloadFileTool } from "./tools/download-file"
 import { buildMicrosoftGraphBatchTool, buildMicrosoftGraphTool } from "./tools/graph-passthrough"
 import { buildReadDocumentTool } from "./tools/read-document"
 import { buildSharePointSearchTool } from "./tools/sharepoint-search"
@@ -68,6 +69,7 @@ export const buildServer = (config: ServerRuntimeConfig, auth: AuthStrategy): So
   server.addTool(buildMicrosoftGraphTool(graph, process.env.MCP_INSTRUCTIONS))
   server.addTool(buildMicrosoftGraphBatchTool(graph))
   server.addTool(buildReadDocumentTool(auth))
+  if (config.enableDownloadFile) server.addTool(buildDownloadFileTool(graph))
   server.addTool(buildSharePointSearchTool(graph, config.sharePointSearch))
 
   // Azure AI Search — optional, only when AZURE_AI_SEARCH_* env is configured.

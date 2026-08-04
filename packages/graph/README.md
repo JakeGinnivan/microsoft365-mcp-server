@@ -64,9 +64,17 @@ decisions:
 - **SharePoint search:** only the Graph Search API path is ported (what app-only always uses; the
   region defaults to `NAM`). The gateway's drive-fan-out + site-cache path is unreachable for
   app-only and was intentionally not carried over.
-- **`download_file`:** **not ported** — out of scope for this server's document-RAG purpose. It
-  returns inline images / raw base64 / disk-saved binaries — a delegated/interactive UX feature
-  that overlaps `read_document` (text extraction) and the `microsoft_graph` passthrough (raw GET).
-  The somamcp-side blocker is resolved (`wrapTool` passes content-array/image returns through
-  unchanged; `imageContent` is exported), so a later port is a straightforward scope call, not a
-  dependency wait.
+- **`download_file`:** **ported** (reversing an earlier "out of scope" call). Two things overrode
+  the original reasoning. First, all eight deployed app-only containers already expose this tool —
+  they run the pre-consolidation image, and dropping it here would remove it from all eight the
+  moment they re-pull `:main`. A caller audit could not rule that out: GitHub code search returns
+  zero results across the org even for control queries, so the private-repo index is unusable.
+  Second, it is the correct fallback when extraction cannot help — `read_document` has no OCR, is
+  bounded by per-format size caps, and returns an error on unsupported content types; scanned
+  financial statements hit all three.
+
+  The port is not the delegated/interactive shape that was originally rejected. It returns metadata
+  plus `@microsoft.graph.downloadUrl` (short-lived, pre-authenticated, no `Authorization` header)
+  and inlines base64 only under 256 KB, so a large file is never transferred through the tool at
+  all. Set `GRAPH_ENABLE_DOWNLOAD_FILE=false` to drop it from the tool listing; it defaults **on**
+  so the existing deployment keeps its surface without extra env wiring.

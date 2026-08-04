@@ -18,6 +18,7 @@ export type ServerRuntimeConfig = {
   readonly host: string
   readonly publicBaseUrl: string
   readonly aiSearch?: AiSearchConfig
+  readonly enableDownloadFile: boolean
   readonly sharePointSearch: SharePointSearchConfig
 }
 
@@ -94,6 +95,9 @@ export const resolveServerRuntimeConfig = (env: NodeJS.ProcessEnv = process.env)
       host,
       publicBaseUrl: (blankToUndefined(env.MCP_PUBLIC_BASE_URL) ?? `http://${host}:${port}`).replace(/\/$/, ""),
       aiSearch: resolveAiSearchConfig(env),
+      // Defaults ON: the eight deployed app-only containers already expose download_file, and
+      // they lose it the moment they re-pull :main. Opt-out, not opt-in.
+      enableDownloadFile: env.GRAPH_ENABLE_DOWNLOAD_FILE?.trim().toLowerCase() !== "false",
       sharePointSearch: resolveSharePointSearchConfig(env),
     }
   })
