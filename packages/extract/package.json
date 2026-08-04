@@ -1,8 +1,8 @@
 {
-  "name": "@sapientsai/ms-graph-extract",
+  "name": "@sapientsai/document-extract",
   "version": "0.0.0",
   "private": true,
-  "description": "Binary document → text extraction (PDF/DOCX/XLSX/text) for the Graph MCP servers. Knows nothing about Microsoft Graph: it takes a buffer and a content type and returns text or an ExtractError.",
+  "description": "Binary document → text extraction (PDF/DOCX/XLSX/text). Takes a buffer and a content type, returns text or an ExtractError. Knows nothing about Microsoft Graph — and holds the workspace's only heavy parser dependencies, so the packages that import it eagerly stay cheap.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

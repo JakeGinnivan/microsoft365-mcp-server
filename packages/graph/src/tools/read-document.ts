@@ -1,5 +1,5 @@
+import { extractTextFromBuffer } from "@sapientsai/document-extract"
 import { type AuthStrategy, filenameFromPath, formatBytes, GRAPH_API_BASE } from "@sapientsai/ms-graph-core"
-import { extractTextFromBuffer } from "@sapientsai/ms-graph-extract"
 import { z } from "zod"
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB

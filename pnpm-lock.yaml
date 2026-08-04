@@ -60,12 +60,12 @@ importers:
 
   packages/graph:
     dependencies:
+      '@sapientsai/document-extract':
+        specifier: workspace:*
+        version: link:../extract
       '@sapientsai/ms-graph-core':
         specifier: workspace:*
         version: link:../core
-      '@sapientsai/ms-graph-extract':
-        specifier: workspace:*
-        version: link:../extract
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2

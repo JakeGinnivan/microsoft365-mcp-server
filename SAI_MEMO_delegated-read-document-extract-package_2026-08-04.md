@@ -56,21 +56,26 @@ So `read_document` on the delegated side is a **new native tool following local 
 | --- | --- |
 | Add `mammoth`/`unpdf`/`exceljs` to `packages/microsoft365` | Rejected. Duplicates the module and contradicts the stated intent in `extract.ts`'s own header comment. |
 | Leave it in `packages/graph`, depend on that from `microsoft365` | Rejected. Makes the delegated server depend on a *server* package, pulling in the somamcp shell to get a text extractor. Layering inversion. |
-| `packages/core`, with a `./extract` subpath deliberately absent from the barrel | Rejected on cohesion and safety. See below. |
-| **New `packages/extract` (chosen)** | Correct boundary, safe by construction. |
+| `packages/core`, with a `./extract` subpath deliberately absent from the barrel | Rejected. Makes the workspace's most-imported package expensive to import. See below. |
+| **New `packages/extract` (chosen)** | Keeps core cheap to import. See below. |
 
 One argument that does **not** justify avoiding core, recorded so nobody re-litigates it:
 
 - "It pollutes core's dependencies." Dead. `@sapientsai/ms-graph-core` is `"private": true` at version `0.0.0` and is never published. Its consumers are exactly the two server packages, and after this change both need extraction. `pnpm-workspace.yaml` sets `injectWorkspacePackages: true`, so workspace deps hard-link into the deployed `node_modules` and the parsers land on disk in the delegated image regardless of which package declares them. Lazy loading controls startup and bundle, never disk.
 
-The two arguments that **do** decide it:
+The argument that **does** decide it:
 
-1. **Cohesion.** Every current member of core is Microsoft Graph specific: `auth-strategy`, `graph-request`, `constants`, `types`, `upload/`, `odata-helpers`, `pagination`, `upload-helpers`. `extractTextFromBuffer(buffer, contentType, filename)` does not know Graph exists. It parses office documents. It would be the only non-Graph member of a package described as "Shared Microsoft Graph plumbing."
-2. **Safe by construction, not by discipline.** The core version only works if extraction is kept out of `packages/core/src/index.ts`, because `packages/microsoft365/src/index.ts` imports that barrel eagerly at module load. One `export * from "./extract"` line added by a future contributor tidying the barrel silently regresses the delegated server's startup path, and nothing naturally catches it. A separate package has no shared barrel to widen.
+**Import weight.** Both servers import `@sapientsai/ms-graph-core` eagerly, at module load. Today that costs nothing — core's only dependency is `functype`. Put extraction inside core, even behind a subpath the barrel does not export, and "importing core is free" stops being a fact and becomes something each contributor has to check: *which part of core am I pulling, and does it drag three parsers into startup?* That is a permanent tax on the most-imported package in the repo, paid to avoid one `package.json`.
+
+The parsers also churn on their own schedule — `unpdf` shipped a breaking change mid-wave (§4.2a). Behind their own boundary, a parser bump touches one manifest and cannot perturb core. And "core is eager, extract is lazy" is a fact about packages, which survives contributor turnover better than "this subpath of core must never enter the barrel," which is a convention someone has to remember.
+
+Cohesion points the same way — every current member of core is Graph-specific (`auth-strategy`, `graph-request`, `constants`, `types`, `upload/`, `odata-helpers`, `pagination`, `upload-helpers`), and a document parser would be the lone exception in a package described as "Shared Microsoft Graph plumbing." But treat that as corroboration, not the reason: a package description can always be rewritten.
+
+**One argument previously listed here has been withdrawn.** An earlier draft claimed the separate package is "safe by construction," because nobody can widen a barrel that does not exist. That is weaker than it sounds. A separate package does not prevent the actual failure — a top-level `import { extractTextFromBuffer } from "@sapientsai/document-extract"` in the delegated server breaks lazy loading exactly as well, and no package boundary catches it. What catches it is the startup assertion in §9.7, which is required either way. Do not skip §9.7 on the theory that the package split already bought you that guarantee. It did not.
 
 **Corollary — drop the `GraphApiError` return type.** `extractTextFromBuffer` currently returns `Either<GraphApiError, string>`, which is an artifact of the original port, not a real coupling: a document parser has no business returning a Graph error. Give it its own error type so the package depends on nothing but `functype` and has no relationship to core at all.
 
-This is genuinely marginal against the core option, and the core option also ships. It was chosen for boundary correctness and for removing a future footgun, not because the alternative fails.
+**On the name.** The package is `@sapientsai/document-extract`, not `ms-graph-extract`. Once the `GraphApiError` corollary lands, the module's imports are `node:path`, `exceljs`, `functype`, `mammoth`, `unpdf` — nothing Microsoft. A name asserting a Graph coupling would invite exactly the misreading this section exists to prevent. `packages/core` keeps its `ms-graph-` prefix because it has earned it.
 
 **3.2 `download_file` is ported to `packages/graph`, not dropped.** `packages/graph/README.md` currently says it is "not ported — out of scope for this server's document-RAG purpose." That was a defensible design call, but two facts override it:
 
@@ -112,7 +117,7 @@ Also set `--max-old-space-size` explicitly in both Dockerfiles. Node's default o
 
 ---
 
-## 4. Change A — `packages/extract` (`@sapientsai/ms-graph-extract`)
+## 4. Change A — `packages/extract` (`@sapientsai/document-extract`)
 
 Move `packages/graph/src/extract/` into the new package, carrying the **current** file contents (see §4.2a — do not copy from an older revision). Preserve the current exports: `extractTextFromBuffer`, `CONTENT_TYPE_MAP`, `EXTRACTABLE_TYPES`, `isTextContent`, `resolveContentType`. Move the extraction specs from `packages/graph/test/` across with the module. `packages/*` is already the workspace glob, so no `pnpm-workspace.yaml` change is needed.
 
@@ -155,7 +160,7 @@ It only reads `.message`, which `ExtractError` still has. So graph needs no chan
 
 ```json
 {
-  "name": "@sapientsai/ms-graph-extract",
+  "name": "@sapientsai/document-extract",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -195,7 +200,7 @@ This is also the template for the failure mode: it typechecked clean and broke o
 
 ### 4.3 `packages/graph`
 
-Depend on `@sapientsai/ms-graph-extract`, change `read-document.ts`'s import from `../extract/extract` to the package, and **remove `exceljs`, `mammoth`, `unpdf` from `packages/graph/package.json`**. Graph imports it eagerly; it is the RAG server and always needs it.
+Depend on `@sapientsai/document-extract`, change `read-document.ts`'s import from `../extract/extract` to the package, and **remove `exceljs`, `mammoth`, `unpdf` from `packages/graph/package.json`**. Graph imports it eagerly; it is the RAG server and always needs it.
 
 ---
 
@@ -340,7 +345,7 @@ export const readDocument = async (params: {
   const buffer = Buffer.from(await response.arrayBuffer())
 
   // Lazy: keeps mammoth/unpdf/exceljs out of the startup path. See §3.3.
-  const { extractTextFromBuffer } = await import("@sapientsai/ms-graph-extract")
+  const { extractTextFromBuffer } = await import("@sapientsai/document-extract")
   const extracted = await extractTextFromBuffer(buffer, contentType, filename)
   // ... truncate to max_chars, return Right(`File: ${filename} (${formatBytes(...)})\n\n${text}`)
 }
@@ -430,7 +435,7 @@ Land all four changes before any redeploy. Then one coordinated pass, which is c
 1. No OCR. Scanned PDFs yield nothing from `read_document`; fall back to `download_file`.
 2. Per-format extraction caps (§3.4): 100 MB PDF, 50 MB DOCX, 25 MB XLSX, 25 MB text, with an `MS365_MAX_EXTRACT_BYTES` ceiling. Over the cap, `download_file` returns a download URL instead.
 3. Delegated discovery is split between `search_files` (OneDrive) and `search_site_files` (per-site). Neither is a tenant-wide KQL search. `sharepoint_search` on the app-only server is the only Graph Search API path in the monorepo.
-4. `@sapientsai/ms-graph-core` is a `devDependency` in `packages/microsoft365` despite runtime imports, presumably relying on tsdown bundling. Pre-existing oddity, worth a look but not part of this wave. Note that `@sapientsai/ms-graph-extract` cannot follow that pattern, because it is loaded through a runtime `import()` rather than bundled at build time, so it belongs in `dependencies`.
+4. `@sapientsai/ms-graph-core` is a `devDependency` in `packages/microsoft365` despite runtime imports, presumably relying on tsdown bundling. Pre-existing oddity, worth a look but not part of this wave. Note that `@sapientsai/document-extract` cannot follow that pattern, because it is loaded through a runtime `import()` rather than bundled at build time, so it belongs in `dependencies`.
 
 ---
 

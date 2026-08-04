@@ -35,8 +35,8 @@
   },
   "prettier": "ts-builds/prettier",
   "dependencies": {
+    "@sapientsai/document-extract": "workspace:*",
     "@sapientsai/ms-graph-core": "workspace:*",
-    "@sapientsai/ms-graph-extract": "workspace:*",
     "dotenv": "^17.4.2",
     "functype": "1.4.4",
     "somamcp": "^1.1.1",
