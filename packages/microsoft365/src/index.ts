@@ -626,9 +626,16 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   {
     name: "download_file",
     description:
-      "Download a file. Returns content inline for text files under 100KB, otherwise returns metadata and download URL.",
+      "Get a file's metadata and download URL. Returns content inline for text files under 100KB. For a " +
+      "SharePoint file, pass drive_id as well — without it the item is looked up in your own OneDrive and " +
+      "will not be found. For readable text from PDF/DOCX/XLSX, use read_document instead; come here when " +
+      "extraction fails (scanned PDFs, unsupported types, files over the extraction cap) or you need raw bytes.",
     parameters: z.object({
       item_id: z.string().describe("Drive item ID"),
+      drive_id: z
+        .string()
+        .optional()
+        .describe("Drive ID holding the item. Required for SharePoint; omit for your own OneDrive."),
     }),
     execute: async (params) => unwrapResult(await downloadFile(params)),
     domain: "files",

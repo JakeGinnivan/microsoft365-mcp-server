@@ -145,9 +145,15 @@ const createGraphClient = (auth: AuthStrategy) => {
   const searchFiles = (query: string) =>
     request<ODataResponse<GraphDriveItem>>("GET", `/me/drive/root/search(q='${encodeURIComponent(query)}')`)
 
-  const downloadFile = (id: string) => request<GraphDriveItem>("GET", `/me/drive/items/${id}`)
+  // A drive item lives under /me/drive only when it is in the caller's own OneDrive. SharePoint
+  // items need their own drive, which is why the /me/drive-only version returned "The resource
+  // could not be found." for every SharePoint item ID.
+  const driveItemPath = (id: string, driveId?: string) =>
+    driveId ? `/drives/${driveId}/items/${id}` : `/me/drive/items/${id}`
 
-  const downloadFileContent = async (id: string): Promise<Either<GraphApiError, string>> => {
+  const downloadFile = (id: string, driveId?: string) => request<GraphDriveItem>("GET", driveItemPath(id, driveId))
+
+  const downloadFileContent = async (id: string, driveId?: string): Promise<Either<GraphApiError, string>> => {
     const tokenResult = await auth.getAccessToken()
     if (tokenResult.isLeft()) {
       return Left<GraphApiError, string>({
@@ -157,7 +163,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     }
     const token = tokenResult.value as string
     const version = defaultVersion()
-    const url = `${GRAPH_API_BASE}/${version}/me/drive/items/${id}/content`
+    const url = `${GRAPH_API_BASE}/${version}${driveItemPath(id, driveId)}/content`
 
     try {
       const response = await fetch(url, {

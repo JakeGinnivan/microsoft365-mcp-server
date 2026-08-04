@@ -94,11 +94,14 @@ export const searchFiles = async (params: { query: string }): Promise<Either<Use
     .map((response) => formatDriveItemList((response as ODataResponse<never>).value))
 }
 
-export const downloadFile = async (params: { item_id: string }): Promise<Either<UserError, string>> => {
+export const downloadFile = async (params: {
+  item_id: string
+  drive_id?: string
+}): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  const metaResult = await client.downloadFile(params.item_id)
+  const metaResult = await client.downloadFile(params.item_id, params.drive_id)
   if (metaResult.isLeft()) {
     return Left(new UserError(`Failed to get file info: ${(metaResult.value as { message: string }).message}`))
   }
@@ -107,7 +110,7 @@ export const downloadFile = async (params: { item_id: string }): Promise<Either<
   const detail = formatDriveItemDetail(item)
 
   if (isTextFile(item.file?.mimeType) && (item.size ?? 0) <= MAX_INLINE_SIZE) {
-    const contentResult = await client.downloadFileContent(params.item_id)
+    const contentResult = await client.downloadFileContent(params.item_id, params.drive_id)
     if (contentResult.isRight()) {
       const content = contentResult.value as string
       return Right(`${detail}\n\n## Content\n\n\`\`\`\n${content}\n\`\`\``)
