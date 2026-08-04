@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@11.12.0+sha512.820a6fbd0d9f04c226638002aead1e45340a9139dd5dc077c1d83ef44aa2481c8eb6637b4c9aa696a3c7e35ba818e49cf27213e5f2b91138d09b7a3e26e898ba",
+  "packageManager": "pnpm@11.20.0+sha512.9a6f330a95b66446ea088faf1521405a8a01f07fde7124cc9958dfed52d4bb436737e65b08f85f37b46fcba375092558ac51262b816844b22f63406ed166bfee",
   "scripts": {
     "validate": "pnpm -r validate",
     "build": "pnpm -r build",
@@ -21,6 +21,6 @@
     "build:mcpb": "pnpm --filter microsoft365-mcp-server build:mcpb"
   },
   "devDependencies": {
-    "ts-builds": "^3.2.1"
+    "ts-builds": "^3.2.3"
   }
 }

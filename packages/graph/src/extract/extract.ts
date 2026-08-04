@@ -59,7 +59,7 @@ const extractPdf = async (buffer: Buffer): Promise<Either<GraphApiError, string>
       const { totalPages, text } = await extractPdfText(pdf, { mergePages: true })
       return Right(`[PDF: ${totalPages} page${totalPages === 1 ? "" : "s"}]\n\n${text}`)
     } finally {
-      await pdf.destroy()
+      await pdf.loadingTask.destroy()
     }
   } catch (err) {
     return Left(parseError(err instanceof Error ? err.message : "PDF extraction failed"))
