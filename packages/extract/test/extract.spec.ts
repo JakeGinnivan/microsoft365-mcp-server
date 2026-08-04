@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs"
 import { describe, expect, it } from "vitest"
 
-import { EXTRACTABLE_TYPES, extractTextFromBuffer, isTextContent, resolveContentType } from "../src/extract/extract"
+import { EXTRACTABLE_TYPES, extractTextFromBuffer, isTextContent, resolveContentType } from "../src/extract"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -73,6 +73,16 @@ describe("extractTextFromBuffer", () => {
     const result = await extractTextFromBuffer(Buffer.from("x"), "image/png", "p.png")
     expect(result.isLeft()).toBe(true)
     expect((result.value as { message: string }).message).toContain("Unsupported content type")
+  })
+
+  // The two ExtractError arms are load-bearing for callers: "parse" means the file is broken,
+  // "unsupported" means this package does not handle the format and download_file is the fallback.
+  it("distinguishes unsupported from parse in the error type", async () => {
+    const unsupported = await extractTextFromBuffer(Buffer.from("x"), "image/png", "p.png")
+    expect((unsupported.value as { type: string }).type).toBe("unsupported")
+
+    const corrupt = await extractTextFromBuffer(Buffer.from("not a docx"), DOCX, "broken.docx")
+    expect((corrupt.value as { type: string }).type).toBe("parse")
   })
 
   it("exposes the extractable types", () => {

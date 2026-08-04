@@ -1,14 +1,16 @@
 import { extname } from "node:path"
 
-import type { GraphApiError } from "@sapientsai/ms-graph-core"
 import ExcelJS from "exceljs"
 import { type Either, Left, Right } from "functype/either"
 import mammoth from "mammoth"
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf"
 
-// Binary document → text extraction. Heavy deps (mammoth/unpdf/exceljs) are scoped to this
-// package, never the lean delegated server. Ported from microsoft-mcp-server/src/download/
-// extract.ts onto core's GraphApiError (extraction failures → type "parse").
+// Binary document → text extraction. Heavy deps (mammoth/unpdf/exceljs) live here rather than in
+// either server package, so the delegated server can reach them through a lazy import() and keep
+// them off its startup path. This module knows nothing about Microsoft Graph — it takes a buffer
+// and a content type and returns text — hence its own ExtractError rather than core's GraphApiError.
+
+export type ExtractError = { readonly type: "parse" | "unsupported"; readonly message: string }
 
 export const CONTENT_TYPE_MAP: Record<string, string> = {
   ".pdf": "application/pdf",
@@ -50,9 +52,10 @@ export const resolveContentType = (contentType: string, filename: string): strin
   return lower
 }
 
-const parseError = (message: string): GraphApiError => ({ type: "parse", message })
+const parseError = (message: string): ExtractError => ({ type: "parse", message })
+const unsupportedError = (message: string): ExtractError => ({ type: "unsupported", message })
 
-const extractPdf = async (buffer: Buffer): Promise<Either<GraphApiError, string>> => {
+const extractPdf = async (buffer: Buffer): Promise<Either<ExtractError, string>> => {
   try {
     const pdf = await getDocumentProxy(new Uint8Array(buffer))
     try {
@@ -66,7 +69,7 @@ const extractPdf = async (buffer: Buffer): Promise<Either<GraphApiError, string>
   }
 }
 
-const extractDocx = async (buffer: Buffer): Promise<Either<GraphApiError, string>> => {
+const extractDocx = async (buffer: Buffer): Promise<Either<ExtractError, string>> => {
   try {
     const result = await mammoth.extractRawText({ buffer })
     return Right(result.value)
@@ -75,7 +78,7 @@ const extractDocx = async (buffer: Buffer): Promise<Either<GraphApiError, string
   }
 }
 
-const extractXlsx = async (buffer: Buffer): Promise<Either<GraphApiError, string>> => {
+const extractXlsx = async (buffer: Buffer): Promise<Either<ExtractError, string>> => {
   try {
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buffer as unknown as ArrayBuffer)
@@ -99,7 +102,7 @@ export const extractTextFromBuffer = async (
   buffer: Buffer,
   contentType: string,
   filename: string,
-): Promise<Either<GraphApiError, string>> => {
+): Promise<Either<ExtractError, string>> => {
   const resolved = resolveContentType(contentType, filename)
 
   if (isTextContent(resolved)) return Right(buffer.toString("utf-8"))
@@ -108,5 +111,7 @@ export const extractTextFromBuffer = async (
   if (resolved === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return extractXlsx(buffer)
 
   const supported = [...EXTRACTABLE_TYPES, "text/*"].join(", ")
-  return Left(parseError(`Unsupported content type "${contentType}" for text extraction. Supported: ${supported}`))
+  return Left(
+    unsupportedError(`Unsupported content type "${contentType}" for text extraction. Supported: ${supported}`),
+  )
 }

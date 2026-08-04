@@ -20,7 +20,7 @@ export default [
     // `unwrap`). So prefer-either is off for these boundary handlers, not the internal logic. prefer-fold
     // here only fires on raw nullable checks (if-guards, conditional spreads, `v == null ? "" : String(v)`)
     // that aren't functype Options — heuristic noise, not real folds.
-    files: ["src/tools/**/*.ts", "src/extract/**/*.ts"],
+    files: ["src/tools/**/*.ts"],
     rules: {
       "functype/prefer-either": "off",
       "functype/prefer-fold": "off",
