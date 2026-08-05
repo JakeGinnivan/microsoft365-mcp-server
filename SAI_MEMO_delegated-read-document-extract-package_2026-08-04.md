@@ -423,10 +423,26 @@ Also worth adjusting: the tool's description promises "content inline for text f
 
 Land all four changes before any redeploy. Then one coordinated pass, which is currently blocked on a separate issue and should stay blocked until this lands, to avoid churning the graph image twice.
 
-1. Regenerate `civala-ai/civ-devops/CIV_REF_infrastructure-index.md` from Dokploy first. The current file is a 2026-06-07 snapshot, five weeks before v1.0.25 shipped, and its `ms365` row reads `1.0.21` while the live tool surface proves otherwise (it exposes `update_planner_task_details`, which shipped in PR 54 as part of v1.0.25). Do not plan the redeploy off that file.
-2. Redeploy the eight app-only containers to `:main`. Note the caveat already recorded in that index: static images do not auto-pull on Dokploy deploy.
-3. Bump the `ms365` pinned tag.
-4. Parity test: every app-only connector still lists `download_file`; `ms365` now lists `read_document`.
+1. ~~Regenerate the infrastructure index first.~~ **Done 2026-08-05** (`civ-devops@0fe11ba`). It found more than a stale version row — see §10.1 below. Re-read it before planning anything here.
+2. **Bump the `ms365` pinned tag.** This is the only part of the rollout that is ready. `ms365` tracks an explicit version tag, is currently `1.0.31`, and runs the delegated server this wave actually changed.
+3. **The eight app-only containers are deferred to a dedicated window.** Not part of this rollout. See §10.2.
+4. Parity test, scoped to what shipped: `ms365` lists `read_document`, and `download_file` there accepts `drive_id`. The app-only `download_file` parity check moves to whenever step 3 happens.
+
+### 10.1 What regenerating the index actually found
+
+The Dokploy panel had moved from `cluster.civala.ai` to `cluster.civalaos.com` with no redirect — the old host returns a bare Traefik 404, which reads like a bad path or key rather than a moved service. Beyond that: `ms365` was already at `1.0.31` (not the recorded `1.0.21`), the Data project's Postgres is gone so Azure `civala-pdos-db` is the only managed database, `civala-api` moved to `api.civalaos.com`, and `vectorizer-ocr-rescue` is idle.
+
+### 10.2 Why the app-only redeploy is not a redeploy
+
+The instruction this memo originally carried — "redeploy the eight app-only containers to `:main`" — was wrong twice over, and acting on it would have been worse than doing nothing.
+
+**It would not have worked.** All eight services reference an immutable image digest, `microsoft-mcp-server@sha256:8886eef2…318b`, not a tag. A digest reference reproduces identical bytes on every pull, so redeploying is a no-op that reports success. This is stronger than the "static images do not auto-pull" caveat already in the index.
+
+**And if it had worked, it would have been a codebase swap.** `docker-graph.yml` publishes `packages/graph` to `ghcr.io/sapientsai/microsoft-mcp-server` — the same image name those eight containers use — on `v*` tags. So that name now carries two unrelated codebases: the archived pre-consolidation repo (the digest in production) and the consolidated monorepo rewrite (the semver tags). Pointing the eight at any current tag moves them from a known-good old build to a rewrite that **has never been tested as a drop-in replacement**, across all eight subsidiary connectors simultaneously.
+
+Only `ms365` is current. It is a different image name, tracks a version tag, and is the server this wave changed.
+
+So the app-only migration is its own project with its own window, not a step at the end of this one. It needs at minimum: one connector cut over and exercised before the rest, a rollback path (the outgoing digest is the rollback target — record it), and a decision about the shared image name, which is the underlying hazard. Two codebases behind one name will cause this again.
 
 ---
 
