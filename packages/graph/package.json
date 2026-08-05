@@ -39,7 +39,7 @@
     "@sapientsai/ms-graph-core": "workspace:*",
     "dotenv": "^17.4.2",
     "functype": "1.4.4",
-    "somamcp": "^1.1.1",
+    "somamcp": "^1.1.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
