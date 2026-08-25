@@ -39,12 +39,12 @@
     "@sapientsai/ms-graph-core": "workspace:*",
     "dotenv": "^17.4.2",
     "functype": "1.4.4",
-    "somamcp": "^1.1.2",
+    "somamcp": "^1.3.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "ts-builds": "^3.2.3",
+    "ts-builds": "^3.4.1",
     "tsdown": "^0.22.14"
   },
   "engines": {

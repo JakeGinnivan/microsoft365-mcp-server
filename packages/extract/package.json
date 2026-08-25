@@ -34,12 +34,12 @@
   "dependencies": {
     "exceljs": "^4.4.0",
     "functype": "1.4.4",
-    "mammoth": "^1.12.0",
-    "unpdf": "^1.8.0"
+    "mammoth": "^1.12.1",
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "ts-builds": "^3.2.3",
+    "ts-builds": "^3.4.1",
     "tsdown": "^0.22.14"
   },
   "engines": {
