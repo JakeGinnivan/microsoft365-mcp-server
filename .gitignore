@@ -30,6 +30,7 @@ node_modules/
 # Optional caches
 .npm
 .eslintcache
+.ts-builds/
 
 # Output of 'npm pack'
 *.tgz

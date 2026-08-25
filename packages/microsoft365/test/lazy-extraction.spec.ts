@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -20,7 +20,6 @@ import { describe, expect, it } from "vitest"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = join(HERE, "..", "src")
-const DIST = join(HERE, "..", "dist", "index.js")
 
 const EXTRACT_PACKAGE = "@sapientsai/document-extract"
 const PARSERS = ["mammoth", "unpdf", "exceljs"]
@@ -91,17 +90,8 @@ describe("extraction stays off the startup path", () => {
   })
 })
 
-// The source checks above are the real gate — they run on a clean checkout. This one confirms the
-// bundler honored the intent, but `validate` runs test before build, so on a clean tree there is no
-// dist to read and it skips rather than asserting against a stale artifact.
-describe.skipIf(!existsSync(DIST))("built bundle preserves the deferral", () => {
-  const bundle = existsSync(DIST) ? readFileSync(DIST, "utf-8") : ""
-
-  it("keeps the extract package external as a dynamic import", () => {
-    expect(bundle).toContain(`import("${EXTRACT_PACKAGE}")`)
-  })
-
-  it.each(PARSERS)("does not inline %s", (parser) => {
-    expect(staticReferences([DIST], parser)).toEqual([])
-  })
-})
+// The bundle half of this guard — asserting the emitted dist/ still reaches extraction through a
+// dynamic `import(...)` and did not inline the parsers — lives in scripts/check-bundle-deferral.mjs
+// and runs as part of `pnpm build`. It cannot live here: `ts-builds validate` runs test before
+// build, so a vitest assertion about dist/ either skips on a clean checkout or reads a stale
+// artifact locally. Neither state tests anything.

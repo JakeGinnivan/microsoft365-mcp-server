@@ -1,4 +1,7 @@
 {
   "srcDir": "./src",
-  "validateChain": ["format", "lint", "typecheck", "test", "build"]
+  "commands": {
+    "check:bundle": "node scripts/check-bundle-deferral.mjs"
+  },
+  "validateChain": ["format", "lint", "typecheck", "test", "build", "check:bundle"]
 }
