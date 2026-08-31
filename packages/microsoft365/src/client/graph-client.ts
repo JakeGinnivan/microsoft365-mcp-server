@@ -21,6 +21,7 @@ import type {
   GraphDriveItem,
   GraphEvent,
   GraphGroup,
+  GraphMailFolder,
   GraphMeetingTimeSuggestionsResult,
   GraphMessage,
   GraphNotebook,
@@ -48,6 +49,12 @@ const createGraphClient = (auth: AuthStrategy) => {
     request<ODataResponse<GraphMessage>>("GET", "/me/messages", { odataParams })
 
   const getMessage = (id: string) => request<GraphMessage>("GET", `/me/messages/${id}`)
+
+  const listMailFolders = (odataParams?: ODataParams) =>
+    request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
+
+  const moveMessage = (id: string, destinationId: string) =>
+    request<GraphMessage>("POST", `/me/messages/${id}/move`, { body: { destinationId } })
 
   const sendMessage = (message: Record<string, unknown>) =>
     request<Record<string, never>>("POST", "/me/sendMail", { body: message })
@@ -437,6 +444,8 @@ const createGraphClient = (auth: AuthStrategy) => {
     // Mail
     listMessages,
     getMessage,
+    listMailFolders,
+    moveMessage,
     sendMessage,
     createDraft,
     sendDraft,
