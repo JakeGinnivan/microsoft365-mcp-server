@@ -12,7 +12,12 @@ import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
-import { fileCachePersistencePlugin } from "./token-cache"
+import {
+  type AuthenticationRecordLike,
+  fileCachePersistencePlugin,
+  readAuthenticationRecord,
+  writeAuthenticationRecord,
+} from "./token-cache"
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
@@ -84,6 +89,38 @@ const createDeviceCodeCredential = (
     },
   }) as TokenCredential
 
+// An AuthenticationRecord only exists once a sign-in has completed, so it is captured
+// on the way past rather than up front, and written once — it does not change, and
+// rewriting it per token acquisition would be pointless disk traffic.
+//
+// The record is reached through the credential's internal msalClient. That is private
+// API, so it is probed defensively: if the shape ever changes, the record simply is not
+// saved and the next start signs in again, which is the current behaviour anyway. A
+// missing convenience must not become a failed authentication.
+const readActiveAccount = (credential: TokenCredential): AuthenticationRecordLike | undefined => {
+  const client = (credential as { msalClient?: { getActiveAccount?: () => unknown } }).msalClient
+  const account = client?.getActiveAccount?.()
+  const record = account as Partial<AuthenticationRecordLike> | undefined
+  return record?.homeAccountId && record.username && record.clientId ? (record as AuthenticationRecordLike) : undefined
+}
+
+const rememberAccount = (credential: TokenCredential): TokenCredential => {
+  const saved = Ref(false)
+  return {
+    getToken: async (scopes, options) => {
+      const token = await credential.getToken(scopes, options)
+      if (!saved.get()) {
+        const record = readActiveAccount(credential)
+        if (record) {
+          writeAuthenticationRecord(record)
+          saved.set(true)
+        }
+      }
+      return token
+    },
+  }
+}
+
 const createInteractiveCredential = (
   config: Extract<AuthConfig, { mode: "interactive" }>,
 ): Either<AuthError, TokenCredential> => {
@@ -108,16 +145,22 @@ const createInteractiveCredential = (
     )
   }
 
-  return tryCredential(
-    () =>
-      new InteractiveBrowserCredential({
-        tenantId,
-        clientId,
-        redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
-        tokenCachePersistenceOptions,
-      }) as TokenCredential,
-    "interactive",
-  )
+  // Without this the persisted cache is unreachable: the credential raises
+  // AuthenticationRequiredError before consulting it, because it does not know which
+  // account to look for.
+  const authenticationRecord = tokenCachePersistenceOptions ? readAuthenticationRecord() : undefined
+
+  return tryCredential(() => {
+    const browser = new InteractiveBrowserCredential({
+      tenantId,
+      clientId,
+      redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
+      tokenCachePersistenceOptions,
+      authenticationRecord,
+    }) as TokenCredential
+
+    return tokenCachePersistenceOptions ? rememberAccount(browser) : browser
+  }, "interactive")
 }
 
 const createCertificateCredential = (

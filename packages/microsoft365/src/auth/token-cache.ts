@@ -148,3 +148,47 @@ export const fileCachePersistencePlugin = (context: unknown): void => {
   const { cachePluginControl } = context as PluginContext
   cachePluginControl.setPersistence((options) => Promise.resolve(createFileCachePlugin(options?.name ?? "msal.cache")))
 }
+
+// The token cache alone is not enough to skip a sign-in.
+//
+// InteractiveBrowserCredential only attempts silent auth when it already knows which
+// account to look for: with no cachedAccount it raises AuthenticationRequiredError
+// before consulting the cache at all. That account identity comes from an
+// AuthenticationRecord, which lives in memory and dies with the process — so without
+// persisting it too, a perfectly good refresh token sits on disk unreachable and every
+// restart prompts again.
+//
+// The record is not a credential: it identifies the account (home account id, tenant,
+// username, authority). It is stored beside the cache at the same 0600 anyway, since
+// the username is personal information.
+
+export type AuthenticationRecordLike = {
+  readonly authority: string
+  readonly homeAccountId: string
+  readonly tenantId: string
+  readonly username: string
+  readonly clientId: string
+}
+
+const RECORD_FILE = "authentication-record.json"
+
+export const readAuthenticationRecord = (directory = resolveCacheDirectory()): AuthenticationRecordLike | undefined => {
+  const contents = readCache(join(directory, RECORD_FILE))
+  if (!contents) return undefined
+
+  try {
+    const parsed = JSON.parse(contents) as Partial<AuthenticationRecordLike>
+    // A truncated or hand-edited record would otherwise fail deep inside MSAL with a
+    // far less obvious error than simply signing in again.
+    if (!parsed.homeAccountId || !parsed.username || !parsed.clientId) return undefined
+    return parsed as AuthenticationRecordLike
+  } catch {
+    console.error("[Auth] Stored authentication record is unreadable; a fresh sign-in will be required.")
+    return undefined
+  }
+}
+
+export const writeAuthenticationRecord = (
+  record: AuthenticationRecordLike,
+  directory = resolveCacheDirectory(),
+): void => writeCache(join(directory, RECORD_FILE), JSON.stringify(record))
