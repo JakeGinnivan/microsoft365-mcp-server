@@ -65,6 +65,7 @@ import {
   listEvents,
   listGroupMembers,
   listGroups,
+  listMailFolders,
   listMeetingTranscripts,
   listMessages,
   listOnenoteNotebooks,
@@ -80,6 +81,7 @@ import {
   listTodoLists,
   listTodoTasks,
   listUsers,
+  moveMessage,
   readDocument,
   searchContacts,
   searchFiles,
@@ -265,6 +267,32 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     domain: "mail",
     readOnly: true,
     annotations: { readOnlyHint: true },
+  },
+  {
+    name: "list_mail_folders",
+    description: "List mail folders with item and unread counts, for resolving move destinations",
+    parameters: z.object({
+      fetch_all_pages: FETCH_ALL_PAGES_PARAM,
+    }),
+    execute: async (params) => unwrapResult(await listMailFolders(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "move_message",
+    description:
+      "Move a message to another mail folder. Destination accepts a well-known name (archive, deleteditems, inbox, junkemail), a folder display name, or a folder ID. Moving to deleteditems is recoverable; use list_mail_folders to see what exists.",
+    parameters: z.object({
+      message_id: z.string().describe("The message ID to move"),
+      destination: z
+        .string()
+        .describe("Destination folder: well-known name (e.g. archive), display name, or folder ID"),
+    }),
+    execute: async (params) => unwrapResult(await moveMessage(params)),
+    domain: "mail",
+    readOnly: false,
+    annotations: { destructiveHint: true },
   },
   {
     name: "send_message",
