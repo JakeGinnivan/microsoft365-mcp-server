@@ -118,9 +118,12 @@ export const moveMessage = async (params: {
   if (destination.isLeft()) return destination
 
   const result = await client.moveMessage(params.message_id, destination.orThrow())
+  // Deliberately terse: triage moves messages in batches, and echoing each message body
+  // back (formatMessageDetail) floods an LLM caller's context with mail the caller has
+  // already decided to file. Subject and destination are enough to confirm the move.
   return result
     .mapLeft((error) => new UserError(`Failed to move message: ${error.message}`))
-    .map((msg) => `Message moved to ${params.destination}.\n\n${formatMessageDetail(msg)}`)
+    .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${params.destination}. New ID: ${msg.id}`)
 }
 
 export const sendMessage = async (params: {
