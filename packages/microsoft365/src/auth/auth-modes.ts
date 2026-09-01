@@ -149,6 +149,45 @@ const readActiveAccount = (browser: TokenCredential): AuthenticationRecordLike |
   return record?.homeAccountId && record.username && record.clientId ? (record as AuthenticationRecordLike) : undefined
 }
 
+// InteractiveBrowserCredential swallows the reason silent authentication failed: it
+// catches AuthenticationRequiredError and falls straight through to opening a browser,
+// logging nothing. So a stale record, a scope mismatch, or an expired refresh token all
+// present identically as "it asked me to sign in again", with no way to tell which.
+//
+// This probes silently first, with automatic authentication disabled so the failure
+// surfaces as an error instead of a browser window, and reports the reason before
+// handing off to the interactive flow. It changes no behaviour — the browser still
+// opens when it must — it only makes the cause visible.
+const reportSilentFailure = (credential: TokenCredential, probe: SilentProbe): TokenCredential => ({
+  getToken: async (scopes, options) => {
+    const outcome = await probe(scopes, options)
+    if (outcome) console.error(`[Auth] Cached credentials could not be reused (${outcome}). Signing in again.`)
+    return credential.getToken(scopes, options)
+  },
+})
+
+type SilentProbe = (
+  scopes: Parameters<TokenCredential["getToken"]>[0],
+  options: Parameters<TokenCredential["getToken"]>[1],
+) => Promise<string | undefined>
+
+// Returns a reason when the cache cannot serve the request, or undefined when it can.
+const silentProbe =
+  (browser: { getToken: TokenCredential["getToken"] }): SilentProbe =>
+  async (scopes, options) => {
+    try {
+      // Not on the public GetTokenOptions type, but honoured by msalClient — it is what
+      // turns a silent-auth failure into a thrown error rather than a browser window.
+      await browser.getToken(scopes, {
+        ...options,
+        disableAutomaticAuthentication: true,
+      } as Parameters<TokenCredential["getToken"]>[1])
+      return undefined
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
 const rememberAccount = (credential: TokenCredential, browser: TokenCredential): TokenCredential => {
   const saved = Ref(false)
   return {
@@ -208,7 +247,14 @@ const createInteractiveCredential = (
     const withFallback = withDeviceCodeFallback(browser, tenantId, clientId, (t, c) =>
       createDeviceCodeCredential(t, c, tokenCachePersistenceOptions),
     )
-    return tokenCachePersistenceOptions ? rememberAccount(withFallback, browser) : withFallback
+    if (!tokenCachePersistenceOptions) return withFallback
+
+    // Only worth probing when a cache exists to be reused; otherwise the first sign-in
+    // would report a failure that is simply "nothing cached yet".
+    const probed = authenticationRecord
+      ? reportSilentFailure(withFallback, silentProbe(browser as { getToken: TokenCredential["getToken"] }))
+      : withFallback
+    return rememberAccount(probed, browser)
   }, "interactive")
 }
 
