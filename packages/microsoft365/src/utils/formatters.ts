@@ -1,6 +1,7 @@
 import { Option } from "functype"
 
 import type {
+  GraphAttachment,
   GraphBucket,
   GraphCallTranscript,
   GraphChannel,
@@ -34,6 +35,29 @@ export const formatMessageSummary = (msg: GraphMessage): string => {
   const attachments = msg.hasAttachments ? " [Attachments]" : ""
   return `- **${msg.subject ?? "(No Subject)"}** from ${from} (${msg.receivedDateTime ?? ""})${read}${attachments} (ID: ${msg.id})`
 }
+
+const formatBytes = (bytes?: number): string => {
+  if (bytes === undefined) return "unknown size"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// The read_document path is included per attachment on purpose: it is the only way to get at the
+// content, and deriving it by hand is easy to get wrong (the trailing /$value is required).
+export const formatAttachmentSummary = (messageId: string, att: GraphAttachment): string => {
+  const inline = att.isInline ? " [inline]" : ""
+  const type = att.contentType ?? "unknown type"
+  return [
+    `- **${att.name ?? "(unnamed)"}** (${type}, ${formatBytes(att.size)})${inline}`,
+    `  read_document path: /me/messages/${messageId}/attachments/${att.id}/$value`,
+  ].join("\n")
+}
+
+export const formatAttachmentList = (messageId: string, attachments: ReadonlyArray<GraphAttachment>): string =>
+  attachments.length === 0
+    ? "No attachments found."
+    : `# Attachments\n\n${attachments.map((a) => formatAttachmentSummary(messageId, a)).join("\n")}`
 
 export const formatMessageList = (messages: ReadonlyArray<GraphMessage>): string =>
   messages.length === 0 ? "No messages found." : `# Messages\n\n${messages.map(formatMessageSummary).join("\n")}`
