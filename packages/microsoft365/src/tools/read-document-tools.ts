@@ -40,9 +40,22 @@ const envCeiling = (): number => {
 
 const capForMimeType = (mimeType?: string): number => Math.min(FORMAT_CAPS[mimeType ?? ""] ?? DEFAULT_CAP, envCeiling())
 
-// The tool takes a content endpoint (".../items/{id}/content"); the drive item itself is that path
-// without the trailing segment.
-const itemPathFrom = (path: string): string => path.replace(/\/content\/?$/, "")
+// Two content-endpoint shapes reach this tool, and their metadata resources are NOT the same:
+//
+//   drive item       /me/drive/items/{id}/content              -> size, file.mimeType
+//   mail attachment  /me/messages/{id}/attachments/{a}/$value  -> size, contentType (top level)
+//
+// The original strip handled only "/content", so an attachment path kept its "/$value" suffix and
+// the $select was appended to an Edm.Stream resource — which Graph rejects outright:
+// "The type 'Edm.Stream' is not valid for $select or $expand". Every mail-attachment read failed.
+const metaPathFrom = (path: string): string => path.replace(/\/(content|\$value)\/?$/, "")
+
+const isAttachmentPath = (path: string): boolean => /\/attachments\/[^/]+\/\$value\/?$/.test(path)
+
+// A "/$value" that is not an attachment is the raw MIME of a whole message. Its metadata resource is
+// a message, which has neither `name` nor `file`, so the probe below would 400 just as opaquely as
+// the bug this replaces. Say so instead.
+const isMessageMimePath = (path: string): boolean => /\/\$value\/?$/.test(path) && !isAttachmentPath(path)
 
 const httpError = async (response: Response): Promise<UserError> => {
   if (response.headers.get("content-type")?.includes("application/json")) {
@@ -78,18 +91,30 @@ export const readDocument = async (params: {
   const token = tokenResult.value as string
   const version = params.api_version ?? "v1.0"
 
-  const metaResult = await client.graphQuery<GraphDriveItem>(
+  if (isMessageMimePath(params.path)) {
+    return Left(
+      new UserError(
+        "Reading a whole message as MIME is not supported. Use get_message for the body, or point " +
+          "read_document at one of its attachments (.../attachments/{id}/$value).",
+      ),
+    )
+  }
+
+  const attachment = isAttachmentPath(params.path)
+
+  const metaResult = await client.graphQuery<GraphDriveItem & { contentType?: string }>(
     "GET",
-    `${itemPathFrom(params.path)}?$select=id,name,size,file`,
+    `${metaPathFrom(params.path)}?$select=${attachment ? "id,name,contentType,size" : "id,name,size,file"}`,
     undefined,
     version,
   )
   if (metaResult.isLeft()) {
     return Left(new UserError(`Failed to get file info: ${(metaResult.value as { message: string }).message}`))
   }
-  const meta = metaResult.value as GraphDriveItem
+  const meta = metaResult.value as GraphDriveItem & { contentType?: string }
+  const declaredMimeType = attachment ? meta.contentType : meta.file?.mimeType
 
-  const cap = capForMimeType(meta.file?.mimeType)
+  const cap = capForMimeType(declaredMimeType)
   const size = meta.size ?? 0
   if (size > cap) {
     return Left(
@@ -107,7 +132,7 @@ export const readDocument = async (params: {
   if (!response.ok) return Left(await httpError(response))
 
   const buffer = Buffer.from(await response.arrayBuffer())
-  const contentType = response.headers.get("content-type") ?? meta.file?.mimeType ?? "application/octet-stream"
+  const contentType = response.headers.get("content-type") ?? declaredMimeType ?? "application/octet-stream"
   const filename = meta.name ?? filenameFromPath(params.path) ?? "download"
 
   // Lazy — keeps mammoth/unpdf/exceljs off the startup path of a server that mostly does mail and
