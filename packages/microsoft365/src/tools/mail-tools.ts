@@ -13,6 +13,21 @@ import {
 } from "../utils/formatters"
 import { rememberMessageId, resolveMessageIdOrRef } from "../utils/message-refs"
 
+// scan_messages hands back short refs instead of 152-character Graph IDs. Every tool
+// that takes a message_id should accept either, otherwise the scan-then-act loop
+// breaks at whichever tool was overlooked — which is what happened with
+// list_attachments, the tool an attachment sweep depends on most.
+const resolveMessageId = (idOrRef: string): Either<UserError, string> => {
+  const resolved = resolveMessageIdOrRef(idOrRef)
+  return resolved
+    ? Right(resolved)
+    : Left(
+        new UserError(
+          `Unknown message ref "${idOrRef}". Refs come from scan_messages and last for the session — re-run the scan to refresh them.`,
+        ),
+      )
+}
+
 const requireClient = () => {
   const client = getGraphClient()
   if (client.isNone()) return null
@@ -53,16 +68,10 @@ export const getMessage = async (params: {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  // A scan hands back short refs rather than 152-character Graph IDs; accept either.
-  const messageId = resolveMessageIdOrRef(params.message_id)
-  if (!messageId)
-    return Left(
-      new UserError(
-        `Unknown message ref "${params.message_id}". Refs come from scan_messages and last for the session — re-run the scan to refresh them.`,
-      ),
-    )
+  const messageId = resolveMessageId(params.message_id)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
 
-  const result = await client.getMessage(messageId, params.body_format)
+  const result = await client.getMessage(messageId.orThrow(), params.body_format)
   return result.mapLeft((error) => new UserError(`Failed to get message: ${error.message}`)).map(formatMessageDetail)
 }
 
@@ -133,10 +142,13 @@ export const moveMessage = async (params: {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
+  const messageId = resolveMessageId(params.message_id)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+
   const destination = await resolveDestination(client, params.destination)
   if (destination.isLeft()) return destination
 
-  const result = await client.moveMessage(params.message_id, destination.orThrow())
+  const result = await client.moveMessage(messageId.orThrow(), destination.orThrow())
   // Deliberately terse: triage moves messages in batches, and echoing each message body
   // back (formatMessageDetail) floods an LLM caller's context with mail the caller has
   // already decided to file. Subject and destination are enough to confirm the move.
@@ -176,11 +188,16 @@ export const batchMoveMessages = async (params: {
   // Sequential on purpose: Graph throttles per-mailbox, and a 429 midway through a
   // parallel batch leaves the caller unsure which moves actually landed. Reducing over
   // a promise chain keeps that ordering without an imperative loop.
-  const moveOne = async (id: string): Promise<MoveOutcome> => {
-    const result = await client.moveMessage(id, destinationId)
+  const moveOne = async (idOrRef: string): Promise<MoveOutcome> => {
+    const resolved = resolveMessageIdOrRef(idOrRef)
+    // An unresolvable ref fails as its own outcome rather than aborting the batch:
+    // filing dozens of messages should not be lost to one stale ref.
+    if (!resolved) return { id: idOrRef, error: "Unknown message ref — re-run scan_messages to refresh" }
+
+    const result = await client.moveMessage(resolved, destinationId)
     return result.fold<MoveOutcome>(
-      (error) => ({ id, error: (error as { message: string }).message }),
-      (msg) => ({ id, subject: (msg as GraphMessage).subject }),
+      (error) => ({ id: idOrRef, error: (error as { message: string }).message }),
+      (msg) => ({ id: idOrRef, subject: (msg as GraphMessage).subject }),
     )
   }
 
@@ -204,10 +221,14 @@ export const listAttachments = async (params: { message_id: string }): Promise<E
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  const result = await client.listAttachments(params.message_id)
+  const messageId = resolveMessageId(params.message_id)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+  const id = messageId.orThrow()
+
+  const result = await client.listAttachments(id)
   return result
     .mapLeft((error) => new UserError(`Failed to list attachments: ${error.message}`))
-    .map((response) => formatAttachmentList(params.message_id, (response as ODataResponse<GraphAttachment>).value))
+    .map((response) => formatAttachmentList(id, (response as ODataResponse<GraphAttachment>).value))
 }
 
 export const sendMessage = async (params: {

@@ -18,6 +18,7 @@ import {
   listAttachments,
   getMessage,
   scanMessages,
+  listAttachments as listAttachmentsTool,
   listMailFolders,
   moveMessage,
   sendDraft,
@@ -549,5 +550,27 @@ describe("scanMessages paging safety", () => {
     const result = await scanMessages({ search: "invoice" })
 
     expect(result.isRight()).toBe(true)
+  })
+})
+
+describe("scan refs work across message tools", () => {
+  // scan_messages returns short refs, but only get_message resolved them at first.
+  // list_attachments — the tool an attachment sweep leans on hardest — rejected them
+  // as malformed IDs, breaking the scan-then-open loop at exactly the wrong point.
+  it("rejects an unknown ref with guidance instead of a Graph error", async () => {
+    const result = await listAttachments({ message_id: "999999" })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain("scan_messages")
+    expect(mockClient.listAttachments).not.toHaveBeenCalled()
+  })
+
+  it("still passes a full Graph ID straight through", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [] }))
+    const graphId = "AAMkAGI0YjA3OTNhLWY2MDEtNGZlYy1hNzU2LTE4NDFiODg5ZjliMg=="
+
+    await listAttachments({ message_id: graphId })
+
+    expect(mockClient.listAttachments).toHaveBeenCalledWith(graphId)
   })
 })
