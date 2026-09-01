@@ -29,6 +29,7 @@ export {
   createReplyDraft,
   getMessage,
   listMessages,
+  scanMessages,
   searchMessages,
   sendDraft,
   sendForward,

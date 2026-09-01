@@ -21,6 +21,7 @@ import type {
   GraphDriveItem,
   GraphEvent,
   GraphGroup,
+  GraphMailFolder,
   GraphMeetingTimeSuggestionsResult,
   GraphMessage,
   GraphNotebook,
@@ -46,6 +47,14 @@ const createGraphClient = (auth: AuthStrategy) => {
   // Mail
   const listMessages = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphMessage>>("GET", "/me/messages", { odataParams })
+
+  const listMailFolders = (odataParams?: ODataParams) =>
+    request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
+
+  // Scoped to one folder. /me/messages spans the whole mailbox, so scanning an
+  // archive without this means paging through inbox and sent mail to reach it.
+  const listFolderMessages = (folderId: string, odataParams?: ODataParams) =>
+    request<ODataResponse<GraphMessage>>("GET", `/me/mailFolders/${folderId}/messages`, { odataParams })
 
   const getMessage = (id: string) => request<GraphMessage>("GET", `/me/messages/${id}`)
 
@@ -436,6 +445,8 @@ const createGraphClient = (auth: AuthStrategy) => {
     requestPaginated,
     // Mail
     listMessages,
+    listFolderMessages,
+    listMailFolders,
     getMessage,
     sendMessage,
     createDraft,
