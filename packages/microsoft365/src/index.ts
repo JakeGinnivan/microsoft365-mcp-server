@@ -55,6 +55,7 @@ import {
   getUser,
   graphQuery,
   listAccountsTool,
+  listAttachments,
   listCalendarView,
   listChannelMessages,
   listChannels,
@@ -155,7 +156,6 @@ const resolveAuthConfig = (): AuthConfig => {
         tenantId,
         clientId,
         redirectUri: process.env.MS365_REDIRECT_URI,
-        useDeviceCode: process.env.MS365_USE_DEVICE_CODE === "true",
       }
   }
 }
@@ -294,6 +294,18 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     domain: "mail",
     readOnly: false,
     annotations: { destructiveHint: true },
+  },
+  {
+    name: "list_attachments",
+    description:
+      "List a message's attachments with name, content type and size. Returns a read_document path per attachment for extracting its text (PDF, Office, etc).",
+    parameters: z.object({
+      message_id: z.string().describe("The message ID whose attachments to list"),
+    }),
+    execute: async (params) => unwrapResult(await listAttachments(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
   },
   {
     name: "send_message",

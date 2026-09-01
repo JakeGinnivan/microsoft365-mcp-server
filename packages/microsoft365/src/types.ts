@@ -90,6 +90,17 @@ export type GraphMailFolder = {
   readonly totalItemCount?: number
 }
 
+export type GraphAttachment = {
+  readonly id: string
+  readonly name?: string
+  readonly contentType?: string
+  readonly size?: number
+  readonly isInline?: boolean
+  readonly lastModifiedDateTime?: string
+  /** @odata.type — distinguishes fileAttachment from itemAttachment / referenceAttachment. */
+  readonly "@odata.type"?: string
+}
+
 export type GraphEvent = {
   readonly id: string
   readonly subject?: string

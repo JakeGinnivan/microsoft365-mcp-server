@@ -14,6 +14,7 @@ import {
   createForwardDraft,
   createReplyAllDraft,
   createReplyDraft,
+  listAttachments,
   listMailFolders,
   moveMessage,
   sendDraft,
@@ -33,6 +34,7 @@ const mockClient = {
   createReplyDraft: vi.fn(),
   createReplyAllDraft: vi.fn(),
   createForwardDraft: vi.fn(),
+  listAttachments: vi.fn(),
   listMailFolders: vi.fn(),
   moveMessage: vi.fn(),
   requestPaginated: vi.fn(),
@@ -382,6 +384,46 @@ describe("mail-tools", () => {
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "AAMkAGI0-opaque-id" })
       expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "AAMkAGI0-opaque-id")
+    })
+  })
+
+  describe("listAttachments", () => {
+    it("should list attachments with a read_document path for each", async () => {
+      mockClient.listAttachments.mockResolvedValue(
+        Right({
+          value: [{ id: "att-1", name: "invoice.pdf", contentType: "application/pdf", size: 20480 }],
+        }),
+      )
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.isRight()).toBe(true)
+      expect(result.value).toContain("invoice.pdf")
+      expect(result.value).toContain("application/pdf")
+      expect(result.value).toContain("20.0 KB")
+      expect(result.value).toContain("/me/messages/msg-1/attachments/att-1/$value")
+    })
+
+    it("should mark inline attachments so signature images are recognisable", async () => {
+      mockClient.listAttachments.mockResolvedValue(
+        Right({ value: [{ id: "att-2", name: "logo.png", contentType: "image/png", size: 900, isInline: true }] }),
+      )
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.value).toContain("[inline]")
+      expect(result.value).toContain("900 B")
+    })
+
+    it("should report no attachments rather than an empty list", async () => {
+      mockClient.listAttachments.mockResolvedValue(Right({ value: [] }))
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.isRight()).toBe(true)
+      expect(result.value).toContain("No attachments found")
+    })
+
+    it("should surface a failure as a UserError", async () => {
+      const { Left: L } = await import("functype/either")
+      mockClient.listAttachments.mockResolvedValue(L({ message: "not found" }))
+      const result = await listAttachments({ message_id: "bad" })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("Failed to list attachments")
     })
   })
 })
