@@ -14,6 +14,8 @@ import {
   createForwardDraft,
   createReplyAllDraft,
   createReplyDraft,
+  listMailFolders,
+  moveMessage,
   sendDraft,
   sendForward,
   sendMessage,
@@ -31,6 +33,9 @@ const mockClient = {
   createReplyDraft: vi.fn(),
   createReplyAllDraft: vi.fn(),
   createForwardDraft: vi.fn(),
+  listMailFolders: vi.fn(),
+  moveMessage: vi.fn(),
+  requestPaginated: vi.fn(),
 }
 
 beforeEach(() => {
@@ -310,6 +315,73 @@ describe("mail-tools", () => {
       expect(result.isLeft()).toBe(true)
       expect((result.value as Error).message).toContain("recipient is required")
       expect(mockClient.createForwardDraft).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("listMailFolders", () => {
+    it("should list folders with their counts", async () => {
+      mockClient.listMailFolders.mockResolvedValue(
+        Right({ value: [{ id: "f1", displayName: "Archive", totalItemCount: 12, unreadItemCount: 3 }] }),
+      )
+      const result = await listMailFolders()
+      expect(result.isRight()).toBe(true)
+      expect(result.value).toContain("Archive")
+      expect(result.value).toContain("12 items, 3 unread")
+      expect(mockClient.listMailFolders).toHaveBeenCalledWith({ $top: 100 })
+    })
+
+    it("should page through all folders when asked", async () => {
+      mockClient.requestPaginated.mockResolvedValue(Right([{ id: "f1", displayName: "Archive" }]))
+      const result = await listMailFolders({ fetch_all_pages: true })
+      expect(result.isRight()).toBe(true)
+      expect(mockClient.requestPaginated).toHaveBeenCalledWith("/me/mailFolders")
+      expect(mockClient.listMailFolders).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("moveMessage", () => {
+    it("should pass a well-known folder name straight through", async () => {
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1", subject: "Receipt" }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
+      expect(result.isRight()).toBe(true)
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "archive")
+      expect(mockClient.listMailFolders).not.toHaveBeenCalled()
+    })
+
+    it("should map a well-known alias and ignore case", async () => {
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
+      await moveMessage({ message_id: "msg-1", destination: "Deleted Items" })
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "deleteditems")
+    })
+
+    it("should resolve a folder display name to its ID", async () => {
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-receipts", displayName: "Receipts" }] }))
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
+      await moveMessage({ message_id: "msg-1", destination: "Receipts" })
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts")
+    })
+
+    it("should error rather than guess when a display name is ambiguous", async () => {
+      mockClient.listMailFolders.mockResolvedValue(
+        Right({
+          value: [
+            { id: "f-a", displayName: "Receipts" },
+            { id: "f-b", displayName: "Receipts" },
+          ],
+        }),
+      )
+      const result = await moveMessage({ message_id: "msg-1", destination: "Receipts" })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("Multiple folders")
+      expect((result.value as Error).message).toContain("f-a")
+      expect(mockClient.moveMessage).not.toHaveBeenCalled()
+    })
+
+    it("should fall through to Graph when nothing matches, assuming a folder ID", async () => {
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Archive" }] }))
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
+      await moveMessage({ message_id: "msg-1", destination: "AAMkAGI0-opaque-id" })
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "AAMkAGI0-opaque-id")
     })
   })
 })

@@ -292,7 +292,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     execute: async (params) => unwrapResult(await moveMessage(params)),
     domain: "mail",
     readOnly: false,
-    annotations: { destructiveHint: true, idempotentHint: true },
+    annotations: { destructiveHint: true },
   },
   {
     name: "send_message",
