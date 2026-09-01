@@ -4,7 +4,14 @@ import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
 import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
-import { formatAttachmentList, formatMailFolderList, formatMessageDetail, formatMessageList } from "../utils/formatters"
+import {
+  formatAttachmentList,
+  formatMailFolderList,
+  formatMessageDetail,
+  formatMessageList,
+  formatMessageScan,
+} from "../utils/formatters"
+import { rememberMessageId, resolveMessageIdOrRef } from "../utils/message-refs"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -46,7 +53,16 @@ export const getMessage = async (params: {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  const result = await client.getMessage(params.message_id, params.body_format)
+  // A scan hands back short refs rather than 152-character Graph IDs; accept either.
+  const messageId = resolveMessageIdOrRef(params.message_id)
+  if (!messageId)
+    return Left(
+      new UserError(
+        `Unknown message ref "${params.message_id}". Refs come from scan_messages and last for the session — re-run the scan to refresh them.`,
+      ),
+    )
+
+  const result = await client.getMessage(messageId, params.body_format)
   return result.mapLeft((error) => new UserError(`Failed to get message: ${error.message}`)).map(formatMessageDetail)
 }
 
@@ -375,4 +391,61 @@ export const searchMessages = async (params: { query: string; top?: number }): P
   return result
     .mapLeft((error) => new UserError(`Failed to search messages: ${error.message}`))
     .map((response) => formatMessageList((response as ODataResponse<never>).value))
+}
+
+// Only the fields the scan actually prints. Graph returns the full message
+// otherwise — including bodyPreview, which alone can be several hundred characters
+// per message and is the single biggest waste when scanning thousands of headers.
+const SCAN_FIELDS = ["id", "subject", "from", "receivedDateTime", "isRead", "hasAttachments"] as const
+
+// Graph's own ceiling for $top on messages.
+const MAX_PAGE = 999
+
+export const scanMessages = async (params: {
+  folder?: string
+  filter?: string
+  search?: string
+  top?: number
+  skip?: number
+}): Promise<Either<UserError, string>> => {
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  const top = Math.min(params.top ?? 100, MAX_PAGE)
+
+  // Ask for one extra row: if it comes back, there is a further page, and the caller
+  // learns that without paying for a separate $count request.
+  const odataParams = {
+    $select: [...SCAN_FIELDS],
+    $filter: params.filter,
+    $search: params.search,
+    $top: top + 1,
+    $skip: params.skip,
+    // $search and $orderby are mutually exclusive in Graph — asking for both is a
+    // 400, so relevance ordering wins whenever a search term is present.
+    $orderby: params.search ? undefined : "receivedDateTime desc",
+  }
+
+  const resolved = params.folder ? await resolveDestination(client, params.folder) : undefined
+  if (resolved?.isLeft()) return resolved as Either<UserError, string>
+  const folderId = resolved?.orThrow()
+
+  const result = folderId
+    ? await client.listFolderMessages(folderId, odataParams)
+    : await client.listMessages(odataParams)
+
+  return result
+    .mapLeft((error) => new UserError(`Failed to scan messages: ${error.message}`))
+    .map((response) => {
+      const all = (response as ODataResponse<GraphMessage>).value
+      const hasMore = all.length > top
+      const page = hasMore ? all.slice(0, top) : all
+      const refs = page.map((msg) => rememberMessageId(msg.id))
+
+      return formatMessageScan(page, refs, {
+        folder: params.folder,
+        hasMore,
+        nextSkip: (params.skip ?? 0) + top,
+      })
+    })
 }

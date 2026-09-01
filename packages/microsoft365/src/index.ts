@@ -85,6 +85,7 @@ import {
   listUsers,
   moveMessage,
   readDocument,
+  scanMessages,
   searchContacts,
   searchFiles,
   searchMessages,
@@ -260,11 +261,32 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     annotations: { readOnlyHint: true },
   },
   {
+    name: "scan_messages",
+    description:
+      "Scan message headers compactly for triage. Returns pipe-delimited rows (ref|received|from|subject|flags) instead of full markdown — roughly a third the tokens of list_messages — so thousands of messages can be surveyed to decide which few are worth opening. Scope with folder (e.g. 'archive'), narrow with filter or search, page with skip. Pass a returned ref to get_message in place of the message ID.",
+    parameters: z.object({
+      folder: z
+        .string()
+        .optional()
+        .describe(
+          "Folder to scan: well-known name (archive, inbox, sentitems), display name, or ID. Default: all mail",
+        ),
+      filter: z.string().optional().describe("OData filter, e.g. receivedDateTime ge 2026-01-01T00:00:00Z"),
+      search: z.string().optional().describe("Full-text search term. Cannot be combined with date ordering"),
+      top: z.number().optional().describe("Rows per page (default 100, max 999)"),
+      skip: z.number().optional().describe("Rows to skip, for paging through large folders"),
+    }),
+    execute: async (params) => unwrapResult(await scanMessages(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "get_message",
     description:
       "Get a specific email message with full body content. Pass body_format:'text' for marketing or newsletter mail — Graph converts server-side, avoiding tens of thousands of characters of HTML and CSS.",
     parameters: z.object({
-      message_id: z.string().describe("The message ID"),
+      message_id: z.string().describe("The message ID, or a short ref returned by scan_messages"),
       body_format: z
         .enum(["text", "html"])
         .optional()

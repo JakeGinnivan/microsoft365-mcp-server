@@ -33,6 +33,7 @@ export {
   listMailFolders,
   listMessages,
   moveMessage,
+  scanMessages,
   searchMessages,
   sendDraft,
   sendForward,

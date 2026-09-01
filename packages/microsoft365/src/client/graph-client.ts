@@ -63,6 +63,11 @@ const createGraphClient = (auth: AuthStrategy) => {
   const listMailFolders = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
 
+  // Scoped to one folder. /me/messages spans the whole mailbox, so scanning an
+  // archive without this means paging through inbox and sent mail to reach it.
+  const listFolderMessages = (folderId: string, odataParams?: ODataParams) =>
+    request<ODataResponse<GraphMessage>>("GET", `/me/mailFolders/${folderId}/messages`, { odataParams })
+
   const moveMessage = (id: string, destinationId: string) =>
     request<GraphMessage>("POST", `/me/messages/${id}/move`, { body: { destinationId } })
 
@@ -460,6 +465,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     requestPaginated,
     // Mail
     listMessages,
+    listFolderMessages,
     getMessage,
     listAttachments,
     listMailFolders,
