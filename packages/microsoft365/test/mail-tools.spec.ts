@@ -350,6 +350,22 @@ describe("mail-tools", () => {
       expect(mockClient.listMailFolders).not.toHaveBeenCalled()
     })
 
+    // Triage moves in batches; echoing each body back would flood the caller's context.
+    it("should confirm tersely without echoing the message body", async () => {
+      mockClient.moveMessage.mockResolvedValue(
+        Right({ id: "new-id", subject: "Receipt", body: { content: "a very long message body" } }),
+      )
+      const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
+      expect(result.value).toBe('Moved "Receipt" to archive. New ID: new-id')
+      expect(result.value).not.toContain("a very long message body")
+    })
+
+    it("should name an untitled message rather than printing undefined", async () => {
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id" }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
+      expect(result.value).toContain("(No Subject)")
+    })
+
     it("should map a well-known alias and ignore case", async () => {
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "Deleted Items" })
