@@ -413,6 +413,20 @@ export const scanMessages = async (params: {
 
   const top = Math.min(params.top ?? 100, MAX_PAGE)
 
+  // Graph ignores $skip when $search is set — it does not error, it silently returns
+  // the first page again. A caller paging a search would therefore re-read the same
+  // rows while believing it was advancing, and conclude it had seen everything.
+  // Refusing the combination is the only way to make that visible.
+  if (params.search && params.skip !== undefined) {
+    return Left(
+      new UserError(
+        "skip cannot be combined with search: Graph ignores $skip on a $search query and would silently return the first page again. " +
+          "Page a search by narrowing it instead — add a received range to the search string " +
+          '(e.g. "invoice AND received:2024-01-01..2024-06-30") and walk the windows.',
+      ),
+    )
+  }
+
   // Ask for one extra row: if it comes back, there is a further page, and the caller
   // learns that without paying for a separate $count request.
   const odataParams = {
@@ -445,7 +459,10 @@ export const scanMessages = async (params: {
       return formatMessageScan(page, refs, {
         folder: params.folder,
         hasMore,
-        nextSkip: (params.skip ?? 0) + top,
+        // A search cannot be paged with skip (see above), so the caller is told to
+        // narrow instead. Only a filter/list scan gets a usable next offset.
+        nextSkip: params.search ? undefined : (params.skip ?? 0) + top,
+        searched: params.search !== undefined,
       })
     })
 }

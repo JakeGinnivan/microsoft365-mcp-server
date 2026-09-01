@@ -620,7 +620,12 @@ export const formatMessageScanRow = (msg: GraphMessage, ref: number): string => 
 export const formatMessageScan = (
   messages: ReadonlyArray<GraphMessage>,
   refs: ReadonlyArray<number>,
-  meta: { readonly folder?: string; readonly hasMore: boolean; readonly nextSkip?: number },
+  meta: {
+    readonly folder?: string
+    readonly hasMore: boolean
+    readonly nextSkip?: number
+    readonly searched?: boolean
+  },
 ): string => {
   if (messages.length === 0) return "No messages found."
 
@@ -635,7 +640,16 @@ export const formatMessageScan = (
 
   const rows = messages.map((msg, i) => formatMessageScanRow(msg, refs[i]!)).join("\n")
 
-  const more = meta.hasMore ? `\n\nMore available — re-run with skip: ${meta.nextSkip}.` : ""
+  // A truncated scan is the dangerous case: the caller sees a full-looking page and
+  // may conclude it saw everything. Say plainly that results were cut off, and how to
+  // get the rest — which differs for a search, since Graph cannot skip through one.
+  const more = !meta.hasMore
+    ? ""
+    : meta.searched
+      ? "\n\n**INCOMPLETE — more results exist beyond this page.** A search cannot be paged: " +
+        "Graph ignores skip on a search query. Narrow the search instead, e.g. add a date window " +
+        '("... AND received:2024-01-01..2024-06-30") and walk the windows to cover the range.'
+      : `\n\n**INCOMPLETE — more results exist.** Re-run with skip: ${meta.nextSkip} to continue.`
 
   return `${header}${rows}${more}`
 }
