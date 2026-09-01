@@ -263,7 +263,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   {
     name: "scan_messages",
     description:
-      "Scan message headers compactly for triage. Returns pipe-delimited rows (ref|received|from|subject|flags) instead of full markdown — roughly a third the tokens of list_messages — so thousands of messages can be surveyed to decide which few are worth opening. Scope with folder (e.g. 'archive'), narrow with filter or search, page with skip. Pass a returned ref to get_message in place of the message ID.",
+      "Scan message headers compactly for triage. Returns pipe-delimited rows (ref|received|from|subject|flags) instead of full markdown — roughly a third the tokens of list_messages — so thousands of messages can be surveyed to decide which few are worth opening. Scope with folder (e.g. 'archive'), narrow with filter or search. Pass a returned ref to get_message in place of the message ID.\n\nCOVERAGE: a page is capped at 999 rows and any truncated result says INCOMPLETE — treat that as 'you have not seen everything', not as an answer. Page a FILTER scan with skip. A SEARCH cannot be paged (Graph ignores skip on search, silently returning page one again, so passing both is rejected); page a search by narrowing it, e.g. adding 'AND received:2024-01-01..2024-06-30' and walking the windows.\n\nA header is not a message: a routine-looking subject can carry a substantial attachment. When completeness matters, scan with search 'hasattachments:true' over date windows and open what the subject cannot rule out.",
     parameters: z.object({
       folder: z
         .string()

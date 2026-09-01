@@ -116,3 +116,29 @@ describe("formatMessageScan", () => {
     expect(perRow).toBeLessThan(100)
   })
 })
+
+// These cover the failure that made a mail sweep silently incomplete: a truncated
+// scan that read as a complete answer, and paging advice that could not work.
+describe("scan coverage honesty", () => {
+  it("says INCOMPLETE rather than only offering a next page", () => {
+    const out = formatMessageScan([message()], [1], { hasMore: true, nextSkip: 100 })
+
+    expect(out).toContain("INCOMPLETE")
+    expect(out).toContain("skip: 100")
+  })
+
+  // Graph ignores $skip on a $search query and returns page one again. Advising skip
+  // here would send the caller round in a circle believing it was advancing.
+  it("does not offer skip as the way to page a search", () => {
+    const out = formatMessageScan([message()], [1], { hasMore: true, nextSkip: 100, searched: true })
+
+    expect(out).toContain("INCOMPLETE")
+    expect(out).not.toContain("skip: 100")
+    expect(out).toContain("received:")
+  })
+
+  it("stays quiet when the results are complete", () => {
+    const out = formatMessageScan([message()], [1], { hasMore: false })
+    expect(out).not.toContain("INCOMPLETE")
+  })
+})
