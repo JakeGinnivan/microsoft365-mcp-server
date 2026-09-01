@@ -97,20 +97,59 @@ const createDeviceCodeCredential = (
 // API, so it is probed defensively: if the shape ever changes, the record simply is not
 // saved and the next start signs in again, which is the current behaviour anyway. A
 // missing convenience must not become a failed authentication.
-const readActiveAccount = (credential: TokenCredential): AuthenticationRecordLike | undefined => {
-  const client = (credential as { msalClient?: { getActiveAccount?: () => unknown } }).msalClient
+const readActiveAccount = (browser: TokenCredential): AuthenticationRecordLike | undefined => {
+  const client = (browser as { msalClient?: { getActiveAccount?: () => unknown } }).msalClient
   const account = client?.getActiveAccount?.()
   const record = account as Partial<AuthenticationRecordLike> | undefined
   return record?.homeAccountId && record.username && record.clientId ? (record as AuthenticationRecordLike) : undefined
 }
 
-const rememberAccount = (credential: TokenCredential): TokenCredential => {
+// InteractiveBrowserCredential swallows the reason silent authentication failed: it
+// catches AuthenticationRequiredError and falls straight through to opening a browser,
+// logging nothing. So a stale record, a scope mismatch, or an expired refresh token all
+// present identically as "it asked me to sign in again", with no way to tell which.
+//
+// This probes silently first, with automatic authentication disabled so the failure
+// surfaces as an error instead of a browser window, and reports the reason before
+// handing off to the interactive flow. It changes no behaviour — the browser still
+// opens when it must — it only makes the cause visible.
+const reportSilentFailure = (credential: TokenCredential, probe: SilentProbe): TokenCredential => ({
+  getToken: async (scopes, options) => {
+    const outcome = await probe(scopes, options)
+    if (outcome) console.error(`[Auth] Cached credentials could not be reused (${outcome}). Signing in again.`)
+    return credential.getToken(scopes, options)
+  },
+})
+
+type SilentProbe = (
+  scopes: Parameters<TokenCredential["getToken"]>[0],
+  options: Parameters<TokenCredential["getToken"]>[1],
+) => Promise<string | undefined>
+
+// Returns a reason when the cache cannot serve the request, or undefined when it can.
+const silentProbe =
+  (browser: { getToken: TokenCredential["getToken"] }): SilentProbe =>
+  async (scopes, options) => {
+    try {
+      // Not on the public GetTokenOptions type, but honoured by msalClient — it is what
+      // turns a silent-auth failure into a thrown error rather than a browser window.
+      await browser.getToken(scopes, {
+        ...options,
+        disableAutomaticAuthentication: true,
+      } as Parameters<TokenCredential["getToken"]>[1])
+      return undefined
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
+const rememberAccount = (credential: TokenCredential, browser: TokenCredential): TokenCredential => {
   const saved = Ref(false)
   return {
     getToken: async (scopes, options) => {
       const token = await credential.getToken(scopes, options)
       if (!saved.get()) {
-        const record = readActiveAccount(credential)
+        const record = readActiveAccount(browser)
         if (record) {
           writeAuthenticationRecord(record)
           saved.set(true)
@@ -159,7 +198,14 @@ const createInteractiveCredential = (
       authenticationRecord,
     }) as TokenCredential
 
-    return tokenCachePersistenceOptions ? rememberAccount(browser) : browser
+    if (!tokenCachePersistenceOptions) return browser
+
+    // Only worth probing when a cache exists to be reused; otherwise the first sign-in
+    // would report a failure that is simply "nothing cached yet".
+    const probed = authenticationRecord
+      ? reportSilentFailure(browser, silentProbe(browser as { getToken: TokenCredential["getToken"] }))
+      : browser
+    return rememberAccount(probed, browser)
   }, "interactive")
 }
 
