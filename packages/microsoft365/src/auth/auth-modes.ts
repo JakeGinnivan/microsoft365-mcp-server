@@ -4,16 +4,41 @@ import {
   ClientSecretCredential,
   DeviceCodeCredential,
   InteractiveBrowserCredential,
+  useIdentityPlugin,
 } from "@azure/identity"
+import { Ref } from "functype"
 import { type Either, Left, Right } from "functype/either"
 import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
+import { fileCachePersistencePlugin } from "./token-cache"
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
 const DEFAULT_REDIRECT_URI = "http://localhost:3000"
+
+const TOKEN_CACHE_NAME = "microsoft365-mcp-server"
+
+// useIdentityPlugin mutates module-level state in @azure/identity, so it must run once
+// and before any credential is constructed. Ref holds the one-shot flag without a
+// mutable binding, matching the functional style enforced across this package.
+const cacheRegistered = Ref(false)
+
+const enableTokenCachePersistence = (): boolean => {
+  // Opt out with MS365_TOKEN_CACHE=false — e.g. a shared machine, or a CI run where a
+  // persisted token would outlive the job.
+  if (process.env.MS365_TOKEN_CACHE === "false") return false
+
+  if (!cacheRegistered.get()) {
+    useIdentityPlugin(fileCachePersistencePlugin)
+    cacheRegistered.set(true)
+  }
+  return true
+}
+
+/** Test seam: reset the one-shot plugin registration. */
+export const resetTokenCacheRegistrationForTests = (): void => cacheRegistered.set(false)
 
 const tryCredential = (fn: () => TokenCredential, label: string): Either<AuthError, TokenCredential> =>
   Try(fn).fold(
@@ -43,10 +68,15 @@ export const createCredential = (config: AuthConfig): Either<AuthError, TokenCre
   }
 }
 
-const createDeviceCodeCredential = (tenantId: string | undefined, clientId: string): TokenCredential =>
+const createDeviceCodeCredential = (
+  tenantId: string | undefined,
+  clientId: string,
+  tokenCachePersistenceOptions?: { enabled: boolean; name: string },
+): TokenCredential =>
   new DeviceCodeCredential({
     tenantId,
     clientId,
+    tokenCachePersistenceOptions,
     userPromptCallback: (info) => {
       console.error(`\nAuthentication Required:`)
       console.error(`Please visit: ${info.verificationUri}`)
@@ -108,10 +138,20 @@ const createInteractiveCredential = (
     return Left<AuthError, TokenCredential>({ type: "config", message: "Interactive mode requires MS365_CLIENT_ID" })
   }
 
+  // Whichever flow is used below, the resulting token survives a restart — the point
+  // of interactive mode being usable at all. Computed before the device-code branch so
+  // both paths persist.
+  const tokenCachePersistenceOptions = enableTokenCachePersistence()
+    ? { enabled: true, name: TOKEN_CACHE_NAME }
+    : undefined
+
   // Opt out of the browser entirely: headless hosts, SSH sessions, or a machine whose
   // default browser cannot be launched on demand.
   if (config.useDeviceCode) {
-    return tryCredential(() => createDeviceCodeCredential(tenantId, clientId), "device code")
+    return tryCredential(
+      () => createDeviceCodeCredential(tenantId, clientId, tokenCachePersistenceOptions),
+      "device code",
+    )
   }
 
   return tryCredential(() => {
@@ -119,8 +159,11 @@ const createInteractiveCredential = (
       tenantId,
       clientId,
       redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
+      tokenCachePersistenceOptions,
     }) as TokenCredential
-    return withDeviceCodeFallback(browser, tenantId, clientId)
+    return withDeviceCodeFallback(browser, tenantId, clientId, (t, c) =>
+      createDeviceCodeCredential(t, c, tokenCachePersistenceOptions),
+    )
   }, "interactive")
 }
 
