@@ -68,6 +68,16 @@ MS365_CLIENT_ID=your-client-id
 MS365_TENANT_ID=common          # "common" for multi-tenant
 ```
 
+Tokens are cached across restarts when `@azure/identity-cache-persistence` is
+installed (an optional dependency, pulled in by default). Without it — a host where
+its native keychain binding cannot build, for instance — authentication still works
+but must be repeated after every restart. Set `MS365_TOKEN_CACHE=false` to opt out
+of persistence on a shared machine.
+
+> **Unattended deployments should not use interactive mode.** A background service
+> cannot complete a browser sign-in, and a cached token is not a substitute for a
+> credential. Use `client-secret` (below) or `certificate` mode instead.
+
 ### Client Secret
 
 For service accounts and automation.
@@ -392,6 +402,7 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 | `MS365_CERT_PATH`         | Certificate path (for `certificate` mode)                                               | --                  |
 | `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                         | --                  |
 | `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                          | --                  |
+| `MS365_TOKEN_CACHE`       | Persist the interactive token cache across restarts (`false` to disable)                | `true`              |
 | `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                           | --                  |
 | `MS365_GRAPH_VERSION`     | Graph API version: `v1.0` or `beta`                                                     | `v1.0`              |
 | `TRANSPORT_TYPE`          | Transport: `stdio` or `httpStream`                                                      | `stdio`             |

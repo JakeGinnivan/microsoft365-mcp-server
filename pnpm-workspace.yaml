@@ -10,7 +10,9 @@ injectWorkspacePackages: true
 # already skipped under pnpm 10 (no build config) and aren't on the build path —
 # tsdown bundles via rolldown and the published artifact is prebuilt dist/.
 allowBuilds:
+  '@azure/msal-node-extensions': set this to true or false
   esbuild: false
+  keytar: set this to true or false
   tldjs: false
 
 # Force the patched Vite line. vite is transitive (vitest 4.x, dev-only) and the

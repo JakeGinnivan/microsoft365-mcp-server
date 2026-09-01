@@ -4,7 +4,9 @@ import {
   ClientSecretCredential,
   DeviceCodeCredential,
   InteractiveBrowserCredential,
+  useIdentityPlugin,
 } from "@azure/identity"
+import { Ref } from "functype"
 import { type Either, Left, Right } from "functype/either"
 import { Try } from "functype/try"
 
@@ -14,6 +16,45 @@ import { GRAPH_DEFAULT_SCOPE } from "./scopes"
 const ONE_HOUR_MS = 60 * 60 * 1000
 
 const DEFAULT_REDIRECT_URI = "http://localhost:3000"
+
+const TOKEN_CACHE_NAME = "microsoft365-mcp-server"
+
+// Without a persistence plugin, Azure Identity keeps tokens in memory only, so every
+// process restart forces a fresh interactive sign-in. The plugin is an optional
+// dependency because it pulls a native keychain binding (keytar) that will not build
+// everywhere — so registration is attempted once, and its absence degrades to the old
+// in-memory behaviour rather than failing startup.
+// Ref keeps the one-shot registration state without a mutable binding, matching the
+// functional style enforced across this package.
+const cachePersistence = Ref<"unattempted" | "enabled" | "unavailable">("unattempted")
+
+const registerCachePersistencePlugin = (): "enabled" | "unavailable" => {
+  try {
+    // require rather than import: this must not become a hard dependency of the bundle.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- optional native dep, resolved at runtime
+    const plugin = require("@azure/identity-cache-persistence") as { cachePersistencePlugin: unknown }
+    useIdentityPlugin(plugin.cachePersistencePlugin as Parameters<typeof useIdentityPlugin>[0])
+    return "enabled"
+  } catch {
+    console.error(
+      "[Auth] Token cache persistence unavailable (@azure/identity-cache-persistence could not be loaded). " +
+        "Sign-in will be required again after restart.",
+    )
+    return "unavailable"
+  }
+}
+
+const enableTokenCachePersistence = (): boolean => {
+  const current = cachePersistence.get()
+  if (current !== "unattempted") return current === "enabled"
+
+  const outcome = registerCachePersistencePlugin()
+  cachePersistence.set(outcome)
+  return outcome === "enabled"
+}
+
+/** Test seam: reset the one-shot plugin registration state. */
+export const resetTokenCachePersistenceForTests = (): void => cachePersistence.set("unattempted")
 
 const tryCredential = (fn: () => TokenCredential, label: string): Either<AuthError, TokenCredential> =>
   Try(fn).fold(
@@ -52,18 +93,25 @@ const createInteractiveCredential = (
     return Left<AuthError, TokenCredential>({ type: "config", message: "Interactive mode requires MS365_CLIENT_ID" })
   }
 
+  // Opt out with MS365_TOKEN_CACHE=false, e.g. on a shared machine where a persisted
+  // token should not outlive the session.
+  const persist = process.env.MS365_TOKEN_CACHE !== "false" && enableTokenCachePersistence()
+  const tokenCachePersistenceOptions = persist ? { enabled: true, name: TOKEN_CACHE_NAME } : undefined
+
   return tryCredential(() => {
     try {
       return new InteractiveBrowserCredential({
         tenantId,
         clientId,
         redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
+        tokenCachePersistenceOptions,
       }) as TokenCredential
     } catch {
       // Fallback to device code flow for headless environments
       return new DeviceCodeCredential({
         tenantId,
         clientId,
+        tokenCachePersistenceOptions,
         userPromptCallback: (info) => {
           console.error(`\nAuthentication Required:`)
           console.error(`Please visit: ${info.verificationUri}`)
