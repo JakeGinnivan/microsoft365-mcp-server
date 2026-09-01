@@ -11,6 +11,7 @@ import type {
   GraphDriveItem,
   GraphEvent,
   GraphGroup,
+  GraphMailFolder,
   GraphMeetingTimeSuggestion,
   GraphMeetingTimeSuggestionsResult,
   GraphMessage,
@@ -37,6 +38,16 @@ export const formatMessageSummary = (msg: GraphMessage): string => {
 
 export const formatMessageList = (messages: ReadonlyArray<GraphMessage>): string =>
   messages.length === 0 ? "No messages found." : `# Messages\n\n${messages.map(formatMessageSummary).join("\n")}`
+
+export const formatMailFolderSummary = (folder: GraphMailFolder): string => {
+  const counts = `${folder.totalItemCount ?? 0} items, ${folder.unreadItemCount ?? 0} unread`
+  return `- **${folder.displayName ?? "(Unnamed)"}** (${counts}) (ID: ${folder.id})`
+}
+
+export const formatMailFolderList = (folders: ReadonlyArray<GraphMailFolder>): string =>
+  folders.length === 0
+    ? "No mail folders found."
+    : `# Mail Folders\n\n${folders.map(formatMailFolderSummary).join("\n")}`
 
 export const formatMessageDetail = (msg: GraphMessage): string => {
   const from = Option(msg.from?.emailAddress)
