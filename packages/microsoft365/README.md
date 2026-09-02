@@ -233,13 +233,19 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 
 ## Available Tools
 
-### Mail (12 tools)
+### Mail (17 tools)
 
 | Tool                     | Description                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `list_messages`          | List inbox messages with optional filtering                              |
+| `scan_messages`          | Compact header rows for triage — survey thousands of messages cheaply    |
 | `get_message`            | Get a specific message with full body                                    |
 | `search_messages`        | Search messages by query                                                 |
+| `list_attachments`       | List a message's attachments with name, content type and size            |
+| `save_attachment`        | Save an attachment to a local file and return its path                   |
+| `move_message`           | Move a message to another folder                                         |
+| `batch_move_messages`    | Move many messages in one call                                           |
+| `list_mail_folders`      | List mail folders with item and unread counts                            |
 | `send_message`           | Send a new email                                                         |
 | `send_reply`             | Reply to the sender and send now (threaded, original quoted)             |
 | `send_reply_all`         | Reply to all recipients and send now (threaded, original quoted)         |
@@ -253,6 +259,12 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 > The `create_*_draft` tools produce a properly threaded draft (same conversation, full
 > quoted history) for review, then send via `send_draft`. They remain available under
 > `MS365_REQUIRE_DRAFT=true`; the `send_*` tools are hidden in that mode.
+
+> **Reading attachments.** `read_document` extracts *text*, so a scanned PDF or a
+> photographed letter comes back empty — there is no text layer to extract. Use
+> `save_attachment` for those: it writes the file locally and returns the path, leaving
+> the client to read the PDF or image with whatever it already has. That keeps
+> rasterising and OCR out of this server.
 
 ### Calendar (7 tools)
 
