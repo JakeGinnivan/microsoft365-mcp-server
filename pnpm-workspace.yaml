@@ -32,6 +32,21 @@ overrides:
   # acted on by WHATWG URL/fetch, and ajv only uses it to resolve JSON Schema $id/$ref. Revisit if
   # this server ever grows a URL allowlist or redirect follower.
   fast-uri: "^3.1.5"
+  # Hold mcp-proxy below 6.7. fastmcp declares "^6.4.6" (unchanged across 4.12.6, 4.16.8 and
+  # 4.17.1), so a routine lockfile refresh floats it into 6.7.x, where mcp-proxy swapped
+  # @modelcontextprotocol/sdk for @modelcontextprotocol/server@2. Those two model protocol
+  # versions differently: sdk 1.x keeps them in module constants, server 2.x reads
+  # `this._supportedProtocolVersions` off the instance. fastmcp still builds its Server from
+  # sdk 1.x, so 6.7.x hands a gen-1 object to gen-2 code and installDiscoverHandler throws on
+  # every session negotiating 2025-11-25 or 2026-07-28 — which current Claude clients send.
+  #
+  # Not fatal here (sessions establish and tools work), but writeClientIdentity never runs, so
+  # client capabilities are lost and the logs fill with stack traces. Confirmed on 6.7.10 and
+  # 6.7.11; 6.6.0 predates the swap and declares only pipenet.
+  #
+  # REMOVE WHEN punkpeye/mcp-proxy#96 is fixed and released. Watch that issue — nothing local
+  # will tell you: dependabot only sees direct deps, and the suite passes either way.
+  mcp-proxy: "~6.6.0"
 publicHoistPattern:
   - "*eslint*"
   - "*prettier*"
