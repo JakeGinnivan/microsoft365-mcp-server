@@ -107,6 +107,8 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "list_mail_folders", title: "List Mail Folders", domain: "mail", readOnly: true, orgOnly: false },
   { name: "move_message", title: "Move Email Message", domain: "mail", readOnly: false, orgOnly: false },
   { name: "list_attachments", title: "List Email Attachments", domain: "mail", readOnly: true, orgOnly: false },
+  // readOnly refers to the mailbox, which this never mutates. It does write one local file.
+  { name: "save_attachment", title: "Save Email Attachment", domain: "mail", readOnly: true, orgOnly: false },
   {
     name: "batch_move_messages",
     title: "Move Email Messages in Bulk",
