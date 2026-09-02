@@ -233,7 +233,7 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 
 ## Available Tools
 
-### Mail (19 tools)
+### Mail (20 tools)
 
 | Tool                     | Description                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
@@ -253,6 +253,7 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `update_draft`           | Edit a draft's subject, body or recipients (refuses non-drafts)          |
 | `delete_draft`           | Delete a draft (refuses non-drafts)                                      |
 | `list_attachments`       | List a message's attachments, with a read_document path for file ones    |
+| `save_attachment`        | Save an attachment to a local file and return its path (stdio only)      |
 | `list_mail_folders`      | List top-level mail folders with item, unread and subfolder counts       |
 | `move_message`           | Move a message to a well-known folder, a folder name, or a folder ID     |
 | `batch_move_messages`    | Move up to 50 messages to one folder in a single call                    |
@@ -269,6 +270,12 @@ Search stops at 1,000 results. To check every matching message, use a filter suc
 > `MS365_REQUIRE_DRAFT=true`; the `send_*` tools are hidden in that mode, and `graph_query`
 > refuses requests that send mail without a draft (`sendMail`, and `reply`, `replyAll` or
 > `forward` on a message, including inside a `$batch`).
+
+> **Reading attachments.** `read_document` extracts *text*, so a scanned PDF or a
+> photographed letter comes back empty — there is no text layer to extract. Use
+> `save_attachment` for those: it writes the file locally and returns the path, leaving
+> the client to read the PDF or image with whatever it already has. That keeps
+> rasterising and OCR out of this server.
 
 ### Calendar (8 tools)
 
