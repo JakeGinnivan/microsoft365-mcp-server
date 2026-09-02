@@ -73,9 +73,27 @@ const createGraphClient = (auth: AuthStrategy) => {
 
   // $select omits contentBytes deliberately: fileAttachment includes the full base64 payload
   // by default, which would drag megabytes of binary through the model for a listing.
+  //
+  // sourceUrl/providerType/permission/isFolder exist only on referenceAttachment, and Graph returns
+  // null for them on a fileAttachment rather than erroring. They are selected so a cloud link can be
+  // reported as a link — without them a referenceAttachment is indistinguishable from a file whose
+  // bytes happen to be unreachable, which is how these came to be silently dropped.
   const listAttachments = (messageId: string) =>
     request<ODataResponse<GraphAttachment>>("GET", `/me/messages/${messageId}/attachments`, {
-      odataParams: { $select: ["id", "name", "contentType", "size", "isInline", "lastModifiedDateTime"] },
+      odataParams: {
+        $select: [
+          "id",
+          "name",
+          "contentType",
+          "size",
+          "isInline",
+          "lastModifiedDateTime",
+          "sourceUrl",
+          "providerType",
+          "permission",
+          "isFolder",
+        ],
+      },
     })
 
   const sendMessage = (message: Record<string, unknown>) =>

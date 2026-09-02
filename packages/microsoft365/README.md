@@ -265,6 +265,12 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 > `save_attachment` for those: it writes the file locally and returns the path, leaving
 > the client to read the PDF or image with whatever it already has. That keeps
 > rasterising and OCR out of this server.
+>
+> **Cloud links are not files.** A *reference attachment* — a OneDrive, SharePoint or
+> Dropbox link someone attached instead of a file — has no bytes in the mailbox, so
+> neither tool can fetch it. Both now **report the link and its URL** rather than
+> failing or omitting it, because a hidden link is a document you do not know exists.
+> Open the URL to get the content.
 
 ### Calendar (7 tools)
 
