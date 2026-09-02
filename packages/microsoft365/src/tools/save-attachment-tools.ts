@@ -50,6 +50,8 @@ const safeName = (name: string | undefined, contentType: string | undefined, id:
   return `attachment-${id.slice(0, 12)}${EXTENSION_FOR_TYPE[contentType ?? ""] ?? ".bin"}`
 }
 
+const REFERENCE_ATTACHMENT = "#microsoft.graph.referenceAttachment"
+
 const httpError = async (response: Response): Promise<UserError> => {
   if (response.headers.get("content-type")?.includes("application/json")) {
     const data = (await response.json()) as { error?: { message?: string } }
@@ -91,11 +93,30 @@ export const saveAttachment = async (params: {
   if (listResult.isLeft()) {
     return Left(new UserError(`Failed to list attachments: ${(listResult.value as { message: string }).message}`))
   }
-  const all = ((listResult.value as { value?: ReadonlyArray<GraphAttachment> }).value ?? []).filter(
-    (a) => a["@odata.type"] !== "#microsoft.graph.referenceAttachment",
-  )
+  const attachments = (listResult.value as { value?: ReadonlyArray<GraphAttachment> }).value ?? []
 
-  if (all.length === 0) return Left(new UserError("This message has no downloadable file attachments."))
+  // A referenceAttachment is a link to OneDrive/SharePoint/Dropbox; the mailbox holds no bytes for
+  // it, so $value cannot serve one. It is excluded from what can be saved — but never silently:
+  // dropping it would hide a document that exists, so its URL is reported instead.
+  const references = attachments.filter((a) => a["@odata.type"] === REFERENCE_ATTACHMENT)
+  const all = attachments.filter((a) => a["@odata.type"] !== REFERENCE_ATTACHMENT)
+
+  const describeReferences = () =>
+    references
+      .map((r) => `  ${r.name ?? "(unnamed)"}${r.isFolder ? " (folder)" : ""} — ${r.sourceUrl ?? "URL not returned"}`)
+      .join("\n")
+
+  if (all.length === 0) {
+    return Left(
+      new UserError(
+        references.length === 0
+          ? "This message has no attachments."
+          : `This message has no downloadable file attachments, but it does carry ${references.length} cloud ` +
+              `link${references.length === 1 ? "" : "s"} (reference attachment${references.length === 1 ? "" : "s"}). ` +
+              `The mailbox holds no bytes for these — open the URL to get the content:\n${describeReferences()}`,
+      ),
+    )
+  }
 
   // No attachment_id: only unambiguous when there is exactly one. Guessing which of several a caller
   // meant is worse than making them look.
@@ -107,11 +128,27 @@ export const saveAttachment = async (params: {
 
   if (!chosen) {
     if (params.attachment_id) {
+      const asReference = references.find((r) => r.id === params.attachment_id)
+      if (asReference) {
+        return Left(
+          new UserError(
+            `"${asReference.name ?? params.attachment_id}" is a cloud link (reference attachment), not a file in ` +
+              `the mailbox, so there are no bytes to save. Open it directly: ${asReference.sourceUrl ?? "URL not returned by Graph"}`,
+          ),
+        )
+      }
       return Left(new UserError(`No attachment "${params.attachment_id}" on this message. Use list_attachments.`))
     }
     const names = all.map((a) => `  ${a.id}  ${a.name ?? "(unnamed)"} (${formatBytes(a.size ?? 0)})`).join("\n")
+    const alsoLinks =
+      references.length === 0
+        ? ""
+        : `\n\nIt also carries ${references.length} cloud link${references.length === 1 ? "" : "s"}, which cannot ` +
+          `be saved from the mailbox — open the URL instead:\n${describeReferences()}`
     return Left(
-      new UserError(`This message has ${all.length} attachments — pass attachment_id to choose one:\n${names}`),
+      new UserError(
+        `This message has ${all.length} attachments — pass attachment_id to choose one:\n${names}${alsoLinks}`,
+      ),
     )
   }
 

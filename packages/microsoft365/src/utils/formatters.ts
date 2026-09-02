@@ -44,13 +44,36 @@ const formatBytes = (bytes?: number): string => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+const REFERENCE_ATTACHMENT = "#microsoft.graph.referenceAttachment"
+const ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"
+
+// A referenceAttachment is a LINK to OneDrive/SharePoint/Dropbox, not bytes in the mailbox. Printing
+// a read_document path for one promises content that endpoint cannot serve, and silently dropping it
+// is worse still: the document exists, and hiding it lets a sweep report coverage it does not have.
+// So it is listed like any other attachment, with its URL and the reason bytes are not available.
+const formatReferenceAttachment = (att: GraphAttachment): string => {
+  const kind = att.isFolder ? "folder" : "file"
+  const provider = att.providerType ? `${att.providerType}, ` : ""
+  const access = att.permission ? `, ${att.permission}` : ""
+  return [
+    `- **${att.name ?? "(unnamed)"}** — cloud ${kind} link (${provider}reference attachment${access})`,
+    att.sourceUrl ? `  URL: ${att.sourceUrl}` : `  URL: not returned by Graph for this attachment`,
+    `  No bytes in the mailbox: save_attachment and read_document cannot fetch this. Open the URL.`,
+  ].join("\n")
+}
+
 // The read_document path is included per attachment on purpose: it is the only way to get at the
 // content, and deriving it by hand is easy to get wrong (the trailing /$value is required).
 export const formatAttachmentSummary = (messageId: string, att: GraphAttachment): string => {
+  if (att["@odata.type"] === REFERENCE_ATTACHMENT) return formatReferenceAttachment(att)
+
   const inline = att.isInline ? " [inline]" : ""
   const type = att.contentType ?? "unknown type"
+  // An itemAttachment is an embedded Outlook item (a forwarded message, contact or event). Its bytes
+  // are reachable, but as MIME or as an expanded item rather than a document.
+  const item = att["@odata.type"] === ITEM_ATTACHMENT ? " [embedded Outlook item]" : ""
   return [
-    `- **${att.name ?? "(unnamed)"}** (${type}, ${formatBytes(att.size)})${inline}`,
+    `- **${att.name ?? "(unnamed)"}** (${type}, ${formatBytes(att.size)})${inline}${item}`,
     `  read_document path: /me/messages/${messageId}/attachments/${att.id}/$value`,
   ].join("\n")
 }
