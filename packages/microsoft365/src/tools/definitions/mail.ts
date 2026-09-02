@@ -42,7 +42,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
   {
     name: "scan_messages",
     description:
-      "Scan message headers compactly for triage. Returns pipe-delimited rows (ref|received|from|subject|flags) instead of full markdown — roughly a third the tokens of list_messages — so thousands of messages can be surveyed to decide which few are worth opening. Scope with folder (e.g. 'archive'), narrow with filter or search. Pass a returned ref to get_message in place of the message ID.\n\nCOVERAGE: a page is capped at 999 rows and any truncated result says INCOMPLETE — treat that as 'you have not seen everything', not as an answer. Page a FILTER scan with skip. A SEARCH cannot be paged (Graph ignores skip on search, silently returning page one again, so passing both is rejected); page a search by narrowing it, e.g. adding 'AND received:2024-01-01..2024-06-30' and walking the windows.\n\nA header is not a message: a routine-looking subject can carry a substantial attachment. When completeness matters, scan with search 'hasattachments:true' over date windows and open what the subject cannot rule out.",
+      "Scan message headers compactly for triage. Returns pipe-delimited rows (ref|received|from|subject|flags) instead of full markdown — roughly a third the tokens of list_messages — so thousands of messages can be surveyed to decide which few are worth opening. Scope with folder (e.g. 'archive'), narrow with filter or search. Pass a returned ref to get_message in place of the message ID.\n\nCOVERAGE — use FILTER, not SEARCH, whenever completeness matters. A filter pages properly with skip, so you can walk a folder to the end and know you did. A SEARCH cannot be paged at all (Graph ignores skip on search and silently returns page one again, so passing both is rejected) — narrowing a search by date only *shrinks* each window; it never tells you whether the window you got back was whole.\n\nThe trap: a search that returns fewer rows than `top` looks complete and usually is not. Only a filter scan that returns fewer rows than `top` is genuinely exhausted. So for 'have I seen every message with an attachment', use filter: \"hasAttachments eq true and receivedDateTime ge 2024-01-01T00:00:00Z\" and page with skip until a page comes back short. Reserve search for finding known things by keyword.\n\nA page is capped at 999 rows and any truncated result says INCOMPLETE — treat that as 'you have not seen everything', not as an answer.\n\nA header is not a message: a routine-looking subject can carry a substantial attachment. Open what the subject cannot rule out.",
     parameters: z.object({
       folder: z
         .string()
@@ -50,8 +50,20 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
         .describe(
           "Folder to scan: well-known name (archive, inbox, sentitems), display name, or ID. Default: all mail",
         ),
-      filter: z.string().optional().describe("OData filter, e.g. receivedDateTime ge 2026-01-01T00:00:00Z"),
-      search: z.string().optional().describe("Full-text search term. Cannot be combined with date ordering"),
+      filter: z
+        .string()
+        .optional()
+        .describe(
+          'OData filter, e.g. "receivedDateTime ge 2026-01-01T00:00:00Z" or "hasAttachments eq true". ' +
+            "Pageable with skip — use this, not search, when coverage matters.",
+        ),
+      search: z
+        .string()
+        .optional()
+        .describe(
+          "Full-text search term, for finding known things. NOT pageable — cannot be combined with skip or " +
+            "date ordering, and a short result does not mean you have seen everything.",
+        ),
       top: z.number().optional().describe("Rows per page (default 100, max 999)"),
       skip: z.number().optional().describe("Rows to skip, for paging through large folders"),
     }),

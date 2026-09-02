@@ -669,9 +669,13 @@ export const formatMessageScan = (
   const more = !meta.hasMore
     ? ""
     : meta.searched
-      ? "\n\n**INCOMPLETE — more results exist beyond this page.** A search cannot be paged: " +
-        "Graph ignores skip on a search query. Narrow the search instead, e.g. add a date window " +
-        '("... AND received:2024-01-01..2024-06-30") and walk the windows to cover the range.'
+      ? "\n\n**INCOMPLETE — more results exist beyond this page, and a search cannot be paged** " +
+        "(Graph ignores skip on a search query).\n\n" +
+        "**If you need complete coverage, re-run this as a filter instead** — a filter pages with skip " +
+        'until a page comes back short, so you can tell when you are done. e.g. filter: "hasAttachments eq ' +
+        'true and receivedDateTime ge 2024-01-01T00:00:00Z".\n\n' +
+        "Narrowing the search by date shrinks each window but still cannot tell you whether a window was " +
+        "whole — a short search result is NOT evidence you have seen everything."
       : `\n\n**INCOMPLETE — more results exist.** Re-run with skip: ${meta.nextSkip} to continue.`
 
   return `${header}${rows}${more}`

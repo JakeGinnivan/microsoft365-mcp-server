@@ -134,7 +134,23 @@ describe("scan coverage honesty", () => {
 
     expect(out).toContain("INCOMPLETE")
     expect(out).not.toContain("skip: 100")
-    expect(out).toContain("received:")
+  })
+
+  // The failure this replaces: a truncated search told the caller to narrow by date and
+  // walk the windows. That shrinks each window but never establishes coverage — a short
+  // search result still is not proof, so a whole era of a mailbox was under-swept while
+  // every window looked finished. Point at filter, which can actually be exhausted.
+  it("points a truncated search at filter, not just at a narrower search", () => {
+    const out = formatMessageScan([message()], [1], { hasMore: true, nextSkip: 100, searched: true })
+
+    expect(out).toContain("filter")
+    expect(out).toContain("hasAttachments eq true")
+  })
+
+  it("warns that a short search result is not evidence of completeness", () => {
+    const out = formatMessageScan([message()], [1], { hasMore: true, nextSkip: 100, searched: true })
+
+    expect(out).toMatch(/NOT evidence|not evidence/)
   })
 
   it("stays quiet when the results are complete", () => {
