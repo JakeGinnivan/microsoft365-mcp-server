@@ -1,3 +1,4 @@
+import { formatBytes } from "@sapientsai/ms-graph-core"
 import { Option } from "functype"
 
 import type {
@@ -55,7 +56,7 @@ export const formatAttachmentSummary = (messageId: string, att: GraphAttachment)
   const inline = att.isInline ? " [inline]" : ""
   const type = att.contentType ?? "unknown type"
   const size = Option(att.size)
-    .map(formatFileSize)
+    .map(formatBytes)
     .fold(
       () => "unknown size",
       (v) => v,
@@ -299,7 +300,7 @@ ${phones}`
 export const formatDriveItemSummary = (item: GraphDriveItem): string => {
   const type = item.folder ? `Folder (${item.folder.childCount ?? 0} items)` : (item.file?.mimeType ?? "File")
   const size = Option(item.size)
-    .map((s) => ` (${formatFileSize(s)})`)
+    .map((s) => ` (${formatBytes(s)})`)
     .fold(
       () => "",
       (v) => v,
@@ -323,18 +324,11 @@ export const formatDriveItemDetail = (item: GraphDriveItem): string => {
 ## Details
 - ID: ${item.id}
 - Type: ${item.folder ? "Folder" : "File"}
-- Size: ${formatFileSize(item.size ?? 0)}
+- Size: ${formatBytes(item.size ?? 0)}
 - MIME Type: ${item.file?.mimeType ?? "N/A"}
 - Last Modified: ${item.lastModifiedDateTime ?? ""}
 - Modified By: ${item.lastModifiedBy?.user?.displayName ?? "Unknown"}
 - Web URL: ${item.webUrl ?? ""}${downloadUrl}`
-}
-
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return "0 B"
-  const units = ["B", "KB", "MB", "GB"]
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
 // Teams

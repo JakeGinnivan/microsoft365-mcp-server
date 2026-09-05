@@ -335,10 +335,9 @@ describe("mail-tools", () => {
       )
       const result = await listAttachments({ message_id: "msg-1" })
       expect(result.value).toContain("[inline]")
-      // formatFileSize is the shared formatter used for drive items too, so a size always carries
-      // one decimal place. Attachments and files reporting sizes differently was the reason to
-      // consolidate on it.
-      expect(result.value).toContain("900.0 B")
+      // formatBytes is the shared formatter read_document and the file tools already use, so an
+      // attachment reports the same size in the listing as it does once opened.
+      expect(result.value).toContain("900 B")
     })
 
     it("should report no attachments rather than an empty list", async () => {

@@ -270,7 +270,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   {
     name: "list_attachments",
     description:
-      "List a message's attachments with name, content type and size. Returns a read_document path per attachment for extracting its text (PDF, Office, etc).",
+      "List a message's attachments with name, content type and size. Returns a read_document path for file attachments so their text can be extracted (PDF, Office, etc); cloud links and embedded Outlook items are marked as not readable that way.",
     parameters: z.object({
       message_id: z.string().describe("The message ID whose attachments to list"),
     }),
