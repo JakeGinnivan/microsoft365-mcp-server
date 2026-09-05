@@ -332,6 +332,26 @@ describe("mail-tools", () => {
       expect(mockClient.listMailFolders).toHaveBeenCalledWith({ $top: 100 })
     })
 
+    // Verified against live Graph: /me/mailFolders returns immediate children of the root only.
+    // A real Inbox reported childFolderCount 2 while neither subfolder appeared in the response.
+    // Without the count printed, those folders are invisible and unreachable by name.
+    it("should surface subfolders that the listing cannot show", async () => {
+      mockClient.listMailFolders.mockResolvedValue(
+        Right({ value: [{ id: "f1", displayName: "Inbox", totalItemCount: 40, childFolderCount: 2 }] }),
+      )
+      const result = await listMailFolders()
+      expect(result.value).toContain("2 subfolders")
+      expect(result.value).toContain("Top-level folders only")
+    })
+
+    it("should not mention subfolders for a folder that has none", async () => {
+      mockClient.listMailFolders.mockResolvedValue(
+        Right({ value: [{ id: "f2", displayName: "Archive", totalItemCount: 5, childFolderCount: 0 }] }),
+      )
+      const result = await listMailFolders()
+      expect(result.value).not.toContain("subfolders)")
+    })
+
     it("should page through all folders when asked", async () => {
       mockClient.requestPaginated.mockResolvedValue(Right([{ id: "f1", displayName: "Archive" }]))
       const result = await listMailFolders({ fetch_all_pages: true })
@@ -350,13 +370,39 @@ describe("mail-tools", () => {
       expect(mockClient.listMailFolders).not.toHaveBeenCalled()
     })
 
+    // The bug this guards: "junk" is both a well-known alias and a legal display name for a
+    // custom folder. The alias wins, so a mailbox with a folder called "Junk" has its message
+    // filed into Junk Email instead — a different folder. Echoing params.destination back said
+    // "to junk" either way and hid which one happened.
+    it("should name the well-known folder it resolved, not what the caller typed", async () => {
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id", subject: "Newsletter" }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "junk" })
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "junkemail")
+      expect(result.value).toBe('Moved "Newsletter" to the junkemail folder. New ID: new-id')
+    })
+
+    it("should name the matched folder when resolving a display name", async () => {
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-receipts", displayName: "Receipts" }] }))
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id", subject: "Invoice" }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "receipts" })
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts")
+      expect(result.value).toBe('Moved "Invoice" to "Receipts". New ID: new-id')
+    })
+
+    it("should say it fell through to a folder ID rather than implying a name match", async () => {
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Archive" }] }))
+      mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id", subject: "Contract" }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "AAMkAGI0-opaque" })
+      expect(result.value).toBe('Moved "Contract" to folder ID AAMkAGI0-opaque. New ID: new-id')
+    })
+
     // Triage moves in batches; echoing each body back would flood the caller's context.
     it("should confirm tersely without echoing the message body", async () => {
       mockClient.moveMessage.mockResolvedValue(
         Right({ id: "new-id", subject: "Receipt", body: { content: "a very long message body" } }),
       )
       const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
-      expect(result.value).toBe('Moved "Receipt" to archive. New ID: new-id')
+      expect(result.value).toBe('Moved "Receipt" to the archive folder. New ID: new-id')
       expect(result.value).not.toContain("a very long message body")
     })
 

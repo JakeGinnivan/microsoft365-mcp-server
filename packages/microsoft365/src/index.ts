@@ -271,7 +271,8 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   },
   {
     name: "list_mail_folders",
-    description: "List mail folders with item and unread counts, for resolving move destinations",
+    description:
+      "List mail folders with item and unread counts, for resolving move destinations. Top-level folders only — a folder reporting subfolders has children this does not list.",
     parameters: z.object({
       fetch_all_pages: FETCH_ALL_PAGES_PARAM,
     }),
@@ -295,7 +296,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   {
     name: "move_message",
     description:
-      "Move a message to another mail folder. Destination accepts a well-known name (archive, deleteditems, inbox, junkemail), a folder display name, or a folder ID. Moving to deleteditems is recoverable; use list_mail_folders to see what exists.",
+      "Move a message to another mail folder. Destination accepts a well-known name (archive, deleteditems, inbox, junkemail), a top-level folder display name, or a folder ID. A well-known name always wins over a custom folder of the same name, and the confirmation says which was used. Subfolders cannot be resolved by name — pass their ID. Moving to deleteditems is recoverable; use list_mail_folders to see what exists.",
     parameters: z.object({
       message_id: z.string().describe("The message ID to move"),
       destination: z

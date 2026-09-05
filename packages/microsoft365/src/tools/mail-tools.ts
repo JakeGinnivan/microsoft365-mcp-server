@@ -80,30 +80,40 @@ const WELL_KNOWN_FOLDERS: ReadonlyMap<string, string> = new Map([
   ["sent items", "sentitems"],
 ])
 
+// What the caller typed is not what the message ends up in. "junk" is a well-known alias AND a
+// legal display name for a custom folder, and the alias wins — so a mailbox with a folder named
+// "Junk" files the message into Junk Email instead, which is a different folder. Carrying a label
+// alongside the id lets the confirmation say which branch actually fired, rather than echoing the
+// input back and leaving the caller to assume.
+type ResolvedFolder = { readonly id: string; readonly label: string }
+
 const resolveDestination = async (
   client: NonNullable<ReturnType<typeof requireClient>>,
   destination: string,
-): Promise<Either<UserError, string>> => {
+): Promise<Either<UserError, ResolvedFolder>> => {
   const normalized = destination.trim().toLowerCase()
   const wellKnown = WELL_KNOWN_FOLDERS.get(normalized)
-  if (wellKnown) return Right(wellKnown)
+  if (wellKnown) return Right({ id: wellKnown, label: `the ${wellKnown} folder` })
 
   // Otherwise treat it as a folder display name and look it up.
   const result = await client.listMailFolders({ $top: 100 })
   return result
     .mapLeft((error) => new UserError(`Failed to resolve destination folder: ${error.message}`))
-    .flatMap((response) => {
+    .flatMap((response): Either<UserError, ResolvedFolder> => {
       const folders = (response as ODataResponse<GraphMailFolder>).value
       const matches = folders.filter((f) => f.displayName?.toLowerCase() === normalized)
-      if (matches.length === 1) return Right(matches[0]!.id)
+      const match = matches[0]
+      if (matches.length === 1 && match) return Right({ id: match.id, label: `"${match.displayName}"` })
       if (matches.length > 1)
         return Left(
           new UserError(
             `Multiple folders named "${destination}". Pass the folder ID instead: ${matches.map((f) => f.id).join(", ")}`,
           ),
         )
-      // No name matched — assume the caller passed a real folder ID and let Graph judge.
-      return Right(destination)
+      // No name matched — assume the caller passed a real folder ID and let Graph judge. Note that
+      // listMailFolders only sees top-level folders, so a subfolder never matches by name and
+      // always lands here; passing its ID is the supported route.
+      return Right({ id: destination, label: `folder ID ${destination}` })
     })
 }
 
@@ -115,15 +125,19 @@ export const moveMessage = async (params: {
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
   const destination = await resolveDestination(client, params.destination)
-  if (destination.isLeft()) return destination
+  if (destination.isLeft()) return Left(destination.value as UserError)
+  const target = destination.orThrow()
 
-  const result = await client.moveMessage(params.message_id, destination.orThrow())
+  const result = await client.moveMessage(params.message_id, target.id)
   // Deliberately terse: triage moves messages in batches, and echoing each message body
   // back (formatMessageDetail) floods an LLM caller's context with mail the caller has
   // already decided to file. Subject and destination are enough to confirm the move.
+  //
+  // The label, not params.destination: the caller needs to see where the message actually
+  // went when the two differ.
   return result
     .mapLeft((error) => new UserError(`Failed to move message: ${error.message}`))
-    .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${params.destination}. New ID: ${msg.id}`)
+    .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${target.label}. New ID: ${msg.id}`)
 }
 
 export const listAttachments = async (params: { message_id: string }): Promise<Either<UserError, string>> => {
