@@ -11,6 +11,7 @@ import { type Either, Left, Right } from "functype/either"
 import type {
   GraphApiError,
   GraphApiVersion,
+  GraphAttachment,
   GraphBucket,
   GraphChannel,
   GraphChannelMessage,
@@ -48,6 +49,13 @@ const createGraphClient = (auth: AuthStrategy) => {
     request<ODataResponse<GraphMessage>>("GET", "/me/messages", { odataParams })
 
   const getMessage = (id: string) => request<GraphMessage>("GET", `/me/messages/${id}`)
+
+  // $select omits contentBytes deliberately: fileAttachment includes the full base64 payload
+  // by default, which would drag megabytes of binary through the model for a listing.
+  const listAttachments = (messageId: string) =>
+    request<ODataResponse<GraphAttachment>>("GET", `/me/messages/${messageId}/attachments`, {
+      odataParams: { $select: ["id", "name", "contentType", "size", "isInline", "lastModifiedDateTime"] },
+    })
 
   const sendMessage = (message: Record<string, unknown>) =>
     request<Record<string, never>>("POST", "/me/sendMail", { body: message })
@@ -437,6 +445,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     // Mail
     listMessages,
     getMessage,
+    listAttachments,
     sendMessage,
     createDraft,
     sendDraft,

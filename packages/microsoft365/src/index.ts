@@ -55,6 +55,7 @@ import {
   getUser,
   graphQuery,
   listAccountsTool,
+  listAttachments,
   listCalendarView,
   listChannelMessages,
   listChannels,
@@ -262,6 +263,18 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       message_id: z.string().describe("The message ID"),
     }),
     execute: async (params) => unwrapResult(await getMessage(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "list_attachments",
+    description:
+      "List a message's attachments with name, content type and size. Returns a read_document path for file attachments so their text can be extracted (PDF, Office, etc); cloud links and embedded Outlook items are marked as not readable that way.",
+    parameters: z.object({
+      message_id: z.string().describe("The message ID whose attachments to list"),
+    }),
+    execute: async (params) => unwrapResult(await listAttachments(params)),
     domain: "mail",
     readOnly: true,
     annotations: { readOnlyHint: true },
