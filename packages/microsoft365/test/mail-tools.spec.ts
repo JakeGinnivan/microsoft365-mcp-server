@@ -335,7 +335,10 @@ describe("mail-tools", () => {
       )
       const result = await listAttachments({ message_id: "msg-1" })
       expect(result.value).toContain("[inline]")
-      expect(result.value).toContain("900 B")
+      // formatFileSize is the shared formatter used for drive items too, so a size always carries
+      // one decimal place. Attachments and files reporting sizes differently was the reason to
+      // consolidate on it.
+      expect(result.value).toContain("900.0 B")
     })
 
     it("should report no attachments rather than an empty list", async () => {
@@ -343,6 +346,63 @@ describe("mail-tools", () => {
       const result = await listAttachments({ message_id: "msg-1" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("No attachments found")
+    })
+
+    // A referenceAttachment is a cloud link and an itemAttachment is an embedded Outlook item.
+    // Neither has bytes on the /$value stream that read_document reads, so advertising the path for
+    // them hands the caller a read that fails opaquely. Verified against live Graph: @odata.type is
+    // returned on every attachment even when it is not $select-ed, so this is always available.
+    it("should not offer a read_document path for a cloud link", async () => {
+      mockClient.listAttachments.mockResolvedValue(
+        Right({
+          value: [
+            {
+              id: "att-3",
+              name: "Renovation invoices",
+              "@odata.type": "#microsoft.graph.referenceAttachment",
+            },
+          ],
+        }),
+      )
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.value).toContain("Renovation invoices")
+      expect(result.value).toContain("cloud link")
+      expect(result.value).not.toContain("read_document path")
+    })
+
+    it("should not offer a read_document path for an embedded Outlook item", async () => {
+      mockClient.listAttachments.mockResolvedValue(
+        Right({
+          value: [{ id: "att-4", name: "Fwd: contract", "@odata.type": "#microsoft.graph.itemAttachment" }],
+        }),
+      )
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.value).toContain("embedded Outlook item")
+      expect(result.value).not.toContain("read_document path")
+    })
+
+    it("should still offer the path for a file attachment", async () => {
+      mockClient.listAttachments.mockResolvedValue(
+        Right({
+          value: [
+            {
+              id: "att-5",
+              name: "scan.pdf",
+              contentType: "application/pdf",
+              size: 2048,
+              "@odata.type": "#microsoft.graph.fileAttachment",
+            },
+          ],
+        }),
+      )
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.value).toContain("/me/messages/msg-1/attachments/att-5/$value")
+    })
+
+    it("should report an unknown size rather than claiming zero bytes", async () => {
+      mockClient.listAttachments.mockResolvedValue(Right({ value: [{ id: "att-6", name: "mystery.bin" }] }))
+      const result = await listAttachments({ message_id: "msg-1" })
+      expect(result.value).toContain("unknown size")
     })
 
     it("should surface a failure as a UserError", async () => {
