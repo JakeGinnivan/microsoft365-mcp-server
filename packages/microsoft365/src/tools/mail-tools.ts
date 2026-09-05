@@ -85,7 +85,12 @@ const WELL_KNOWN_FOLDERS: ReadonlyMap<string, string> = new Map([
 // "Junk" files the message into Junk Email instead, which is a different folder. Carrying a label
 // alongside the id lets the confirmation say which branch actually fired, rather than echoing the
 // input back and leaving the caller to assume.
-type ResolvedFolder = { readonly id: string; readonly label: string }
+//
+// assumedId records that no name matched and we handed the caller's string to Graph as an ID. It
+// only changes the message on failure, so it costs nothing and guesses nothing: a typo'd folder
+// name and a genuine folder ID are indistinguishable up front, but once Graph has rejected it we
+// know which explanation to give.
+type ResolvedFolder = { readonly id: string; readonly label: string; readonly assumedId: boolean }
 
 const resolveDestination = async (
   client: NonNullable<ReturnType<typeof requireClient>>,
@@ -93,7 +98,7 @@ const resolveDestination = async (
 ): Promise<Either<UserError, ResolvedFolder>> => {
   const normalized = destination.trim().toLowerCase()
   const wellKnown = WELL_KNOWN_FOLDERS.get(normalized)
-  if (wellKnown) return Right({ id: wellKnown, label: `the ${wellKnown} folder` })
+  if (wellKnown) return Right({ id: wellKnown, label: `the ${wellKnown} folder`, assumedId: false })
 
   // Otherwise treat it as a folder display name and look it up.
   const result = await client.listMailFolders({ $top: 100 })
@@ -103,7 +108,8 @@ const resolveDestination = async (
       const folders = (response as ODataResponse<GraphMailFolder>).value
       const matches = folders.filter((f) => f.displayName?.toLowerCase() === normalized)
       const match = matches[0]
-      if (matches.length === 1 && match) return Right({ id: match.id, label: `"${match.displayName}"` })
+      if (matches.length === 1 && match)
+        return Right({ id: match.id, label: `"${match.displayName}"`, assumedId: false })
       if (matches.length > 1)
         return Left(
           new UserError(
@@ -113,7 +119,7 @@ const resolveDestination = async (
       // No name matched — assume the caller passed a real folder ID and let Graph judge. Note that
       // listMailFolders only sees top-level folders, so a subfolder never matches by name and
       // always lands here; passing its ID is the supported route.
-      return Right({ id: destination, label: `folder ID ${destination}` })
+      return Right({ id: destination, label: `folder ID ${destination}`, assumedId: true })
     })
 }
 
@@ -136,7 +142,14 @@ export const moveMessage = async (params: {
   // The label, not params.destination: the caller needs to see where the message actually
   // went when the two differ.
   return result
-    .mapLeft((error) => new UserError(`Failed to move message: ${error.message}`))
+    .mapLeft((error) =>
+      target.assumedId
+        ? new UserError(
+            `No top-level folder is named "${params.destination}", and Graph rejected it as a folder ID: ` +
+              `${error.message}. Check list_mail_folders for the name, or pass a subfolder's ID.`,
+          )
+        : new UserError(`Failed to move message: ${error.message}`),
+    )
     .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${target.label}. New ID: ${msg.id}`)
 }
 

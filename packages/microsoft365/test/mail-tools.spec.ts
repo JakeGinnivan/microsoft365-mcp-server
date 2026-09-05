@@ -396,6 +396,26 @@ describe("mail-tools", () => {
       expect(result.value).toBe('Moved "Contract" to folder ID AAMkAGI0-opaque. New ID: new-id')
     })
 
+    // A typo'd folder name and a real folder ID are indistinguishable before the call. After Graph
+    // has rejected it they are not, so the failure explains itself instead of surfacing an opaque
+    // store error.
+    it("should explain a typo'd folder name once Graph rejects it", async () => {
+      const { Left: L } = await import("functype/either")
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Receipts" }] }))
+      mockClient.moveMessage.mockResolvedValue(L({ message: "The specified object was not found in the store." }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "Reciepts" })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain('No top-level folder is named "Reciepts"')
+      expect((result.value as Error).message).toContain("list_mail_folders")
+    })
+
+    it("should not blame the folder name when a well-known move fails", async () => {
+      const { Left: L } = await import("functype/either")
+      mockClient.moveMessage.mockResolvedValue(L({ message: "Mailbox is unavailable." }))
+      const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
+      expect((result.value as Error).message).toBe("Failed to move message: Mailbox is unavailable.")
+    })
+
     // Triage moves in batches; echoing each body back would flood the caller's context.
     it("should confirm tersely without echoing the message body", async () => {
       mockClient.moveMessage.mockResolvedValue(
