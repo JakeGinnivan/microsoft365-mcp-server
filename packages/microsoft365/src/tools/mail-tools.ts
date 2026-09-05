@@ -3,8 +3,8 @@ import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
-import type { GraphMailFolder, GraphMessage, ODataResponse } from "../types"
-import { formatMailFolderList, formatMessageDetail, formatMessageList } from "../utils/formatters"
+import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
+import { formatAttachmentList, formatMailFolderList, formatMessageDetail, formatMessageList } from "../utils/formatters"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -124,6 +124,16 @@ export const moveMessage = async (params: {
   return result
     .mapLeft((error) => new UserError(`Failed to move message: ${error.message}`))
     .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${params.destination}. New ID: ${msg.id}`)
+}
+
+export const listAttachments = async (params: { message_id: string }): Promise<Either<UserError, string>> => {
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  const result = await client.listAttachments(params.message_id)
+  return result
+    .mapLeft((error) => new UserError(`Failed to list attachments: ${error.message}`))
+    .map((response) => formatAttachmentList(params.message_id, (response as ODataResponse<GraphAttachment>).value))
 }
 
 export const sendMessage = async (params: {

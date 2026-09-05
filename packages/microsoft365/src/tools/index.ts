@@ -28,6 +28,7 @@ export {
   createReplyAllDraft,
   createReplyDraft,
   getMessage,
+  listAttachments,
   listMailFolders,
   listMessages,
   moveMessage,

@@ -177,3 +177,60 @@ describe("readDocument — output", () => {
     expect((result.value as Error).message).toContain("download_file")
   })
 })
+
+// Regression: mail attachments were completely unreadable in production. `itemPathFrom` stripped
+// only "/content", so an attachment path kept its "/$value" and the $select landed on an Edm.Stream
+// resource. Graph answered "The type 'Edm.Stream' is not valid for $select or $expand" and the tool
+// surfaced it as "Failed to get file info" — twice in one hour of real logs.
+describe("readDocument — mail attachments", () => {
+  const ATTACHMENT = "/me/messages/msg-1/attachments/att-1/$value"
+
+  it("probes the attachment resource, not the $value stream", async () => {
+    mockClient.graphQuery.mockResolvedValue(Right({ id: "att-1", name: "report.pdf", contentType: PDF, size: 1024 }))
+    vi.stubGlobal("fetch", givenContent("hello", PDF))
+
+    await readDocument({ path: ATTACHMENT })
+
+    const probedPath = mockClient.graphQuery.mock.calls[0]?.[1] as string
+    expect(probedPath).not.toContain("$value")
+    expect(probedPath).toBe("/me/messages/msg-1/attachments/att-1?$select=id,name,contentType,size")
+  })
+
+  it("reads the cap from contentType, since an attachment has no file.mimeType", async () => {
+    // 30 MB PDF: under the 100 MB PDF cap, over the 25 MB default. So this passes only if
+    // contentType is actually consulted — ignoring it falls back to the default and rejects.
+    mockClient.graphQuery.mockResolvedValue(Right({ id: "att-1", name: "big.pdf", contentType: PDF, size: 30 * MB }))
+    // Metadata contentType drives the cap; the response content-type drives extraction. Keeping the
+    // body text/plain isolates the cap decision from parser behaviour.
+    const fetchSpy = givenContent("extracted")
+    vi.stubGlobal("fetch", fetchSpy)
+
+    const result = await readDocument({ path: ATTACHMENT })
+
+    expect(result.isRight()).toBe(true)
+    expect(fetchSpy).toHaveBeenCalled()
+  })
+
+  it("still probes drive items the old way", async () => {
+    givenItem({ name: "doc.pdf", size: 1024, mimeType: PDF })
+    vi.stubGlobal("fetch", givenContent("hello", PDF))
+
+    await readDocument({ path: "/me/drive/items/1/content" })
+
+    expect(mockClient.graphQuery.mock.calls[0]?.[1]).toBe("/me/drive/items/1?$select=id,name,size,file")
+  })
+
+  // The other /$value shape. Its metadata resource is a message, which has no `name` or `file`, so
+  // probing it would 400 as opaquely as the bug above.
+  it("rejects whole-message MIME with a usable message instead of a Graph 400", async () => {
+    const fetchSpy = givenContent("never read")
+    vi.stubGlobal("fetch", fetchSpy)
+
+    const result = await readDocument({ path: "/me/messages/msg-1/$value" })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain("get_message")
+    expect(mockClient.graphQuery).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})

@@ -1,6 +1,8 @@
+import { formatBytes } from "@sapientsai/ms-graph-core"
 import { Option } from "functype"
 
 import type {
+  GraphAttachment,
   GraphBucket,
   GraphCallTranscript,
   GraphChannel,
@@ -35,6 +37,47 @@ export const formatMessageSummary = (msg: GraphMessage): string => {
   const attachments = msg.hasAttachments ? " [Attachments]" : ""
   return `- **${msg.subject ?? "(No Subject)"}** from ${from} (${msg.receivedDateTime ?? ""})${read}${attachments} (ID: ${msg.id})`
 }
+
+const REFERENCE_ATTACHMENT = "#microsoft.graph.referenceAttachment"
+const ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"
+
+// The read_document path is included per attachment on purpose: it is the only way to get at the
+// content, and deriving it by hand is easy to get wrong (the trailing /$value is required).
+//
+// It is only emitted for attachments that actually have bytes in the mailbox. read_document reads
+// the /$value stream, which only a fileAttachment serves. A referenceAttachment is a OneDrive or
+// Dropbox link and stores nothing; an itemAttachment is an embedded Outlook item, reachable as MIME
+// but not as a document. Printing the path for either promises content that endpoint cannot return,
+// and a caller that follows it gets an opaque failure instead of "there is nothing here to read".
+//
+// Graph returns @odata.type on every attachment whether or not it is $select-ed, so this costs
+// nothing extra. An unrecognised type still gets the path — better to offer a read that might work
+// than to hide a file attachment behind a type name we have not seen before.
+export const formatAttachmentSummary = (messageId: string, att: GraphAttachment): string => {
+  const inline = att.isInline ? " [inline]" : ""
+  const type = att.contentType ?? "unknown type"
+  const size = Option(att.size)
+    .map(formatBytes)
+    .fold(
+      () => "unknown size",
+      (v) => v,
+    )
+  const header = `- **${att.name ?? "(unnamed)"}** (${type}, ${size})${inline}`
+
+  switch (att["@odata.type"]) {
+    case REFERENCE_ATTACHMENT:
+      return `${header}\n  cloud link — no file is stored in the mailbox, so read_document cannot fetch it`
+    case ITEM_ATTACHMENT:
+      return `${header}\n  embedded Outlook item — not readable with read_document`
+    default:
+      return `${header}\n  read_document path: /me/messages/${messageId}/attachments/${att.id}/$value`
+  }
+}
+
+export const formatAttachmentList = (messageId: string, attachments: ReadonlyArray<GraphAttachment>): string =>
+  attachments.length === 0
+    ? "No attachments found."
+    : `# Attachments\n\n${attachments.map((a) => formatAttachmentSummary(messageId, a)).join("\n")}`
 
 export const formatMessageList = (messages: ReadonlyArray<GraphMessage>): string =>
   messages.length === 0 ? "No messages found." : `# Messages\n\n${messages.map(formatMessageSummary).join("\n")}`
@@ -268,7 +311,7 @@ ${phones}`
 export const formatDriveItemSummary = (item: GraphDriveItem): string => {
   const type = item.folder ? `Folder (${item.folder.childCount ?? 0} items)` : (item.file?.mimeType ?? "File")
   const size = Option(item.size)
-    .map((s) => ` (${formatFileSize(s)})`)
+    .map((s) => ` (${formatBytes(s)})`)
     .fold(
       () => "",
       (v) => v,
@@ -292,18 +335,11 @@ export const formatDriveItemDetail = (item: GraphDriveItem): string => {
 ## Details
 - ID: ${item.id}
 - Type: ${item.folder ? "Folder" : "File"}
-- Size: ${formatFileSize(item.size ?? 0)}
+- Size: ${formatBytes(item.size ?? 0)}
 - MIME Type: ${item.file?.mimeType ?? "N/A"}
 - Last Modified: ${item.lastModifiedDateTime ?? ""}
 - Modified By: ${item.lastModifiedBy?.user?.displayName ?? "Unknown"}
 - Web URL: ${item.webUrl ?? ""}${downloadUrl}`
-}
-
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return "0 B"
-  const units = ["B", "KB", "MB", "GB"]
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
 // Teams
