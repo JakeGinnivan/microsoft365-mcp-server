@@ -46,30 +46,30 @@ const createGraphClient = (auth: AuthStrategy) => {
   const { request, requestPaginated } = createGraphRequest(auth, { defaultVersion })
 
   // Mail
-  const listMessages = (odataParams?: ODataParams) =>
-    request<ODataResponse<GraphMessage>>("GET", "/me/messages", { odataParams })
+  const listMessages = (odataParams?: ODataParams, prefix: string = "/me") =>
+    request<ODataResponse<GraphMessage>>("GET", `${prefix}/messages`, { odataParams })
 
   // Prefer: outlook.body-content-type="text" makes Graph convert the body server-side.
   // Marketing mail is mostly CSS and layout tables — one newsletter measured 79,347
   // characters as HTML — so for a caller that only needs the words this is a ~95%
   // reduction, and better than stripping tags locally.
-  const getMessage = (id: string, bodyContentType?: "text" | "html") =>
+  const getMessage = (id: string, bodyContentType?: "text" | "html", prefix: string = "/me") =>
     request<GraphMessage>(
       "GET",
-      `/me/messages/${id}`,
+      `${prefix}/messages/${id}`,
       bodyContentType ? { headers: { Prefer: `outlook.body-content-type="${bodyContentType}"` } } : undefined,
     )
 
-  const listMailFolders = (odataParams?: ODataParams) =>
-    request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
+  const listMailFolders = (odataParams?: ODataParams, prefix: string = "/me") =>
+    request<ODataResponse<GraphMailFolder>>("GET", `${prefix}/mailFolders`, { odataParams })
 
   // Scoped to one folder. /me/messages spans the whole mailbox, so scanning an
   // archive without this means paging through inbox and sent mail to reach it.
-  const listFolderMessages = (folderId: string, odataParams?: ODataParams) =>
-    request<ODataResponse<GraphMessage>>("GET", `/me/mailFolders/${folderId}/messages`, { odataParams })
+  const listFolderMessages = (folderId: string, odataParams?: ODataParams, prefix: string = "/me") =>
+    request<ODataResponse<GraphMessage>>("GET", `${prefix}/mailFolders/${folderId}/messages`, { odataParams })
 
-  const moveMessage = (id: string, destinationId: string) =>
-    request<GraphMessage>("POST", `/me/messages/${id}/move`, { body: { destinationId } })
+  const moveMessage = (id: string, destinationId: string, prefix: string = "/me") =>
+    request<GraphMessage>("POST", `${prefix}/messages/${id}/move`, { body: { destinationId } })
 
   // No $select here, deliberately — see the two constraints it has to satisfy at once.
   //
@@ -92,47 +92,50 @@ const createGraphClient = (auth: AuthStrategy) => {
     }),
   })
 
-  const listAttachments = (messageId: string) =>
-    request<ODataResponse<GraphAttachment>>("GET", `/me/messages/${messageId}/attachments`).then((result) =>
+  const listAttachments = (messageId: string, prefix: string = "/me") =>
+    request<ODataResponse<GraphAttachment>>("GET", `${prefix}/messages/${messageId}/attachments`).then((result) =>
       result.map(stripContentBytes),
     )
 
-  const sendMessage = (message: Record<string, unknown>) =>
-    request<Record<string, never>>("POST", "/me/sendMail", { body: message })
+  const sendMessage = (message: Record<string, unknown>, prefix: string = "/me") =>
+    request<Record<string, never>>("POST", `${prefix}/sendMail`, { body: message })
 
-  const createDraft = (message: Record<string, unknown>) =>
-    request<GraphMessage>("POST", "/me/messages", { body: message })
+  const createDraft = (message: Record<string, unknown>, prefix: string = "/me") =>
+    request<GraphMessage>("POST", `${prefix}/messages`, { body: message })
 
-  const sendDraft = (messageId: string) => request<Record<string, never>>("POST", `/me/messages/${messageId}/send`)
+  const sendDraft = (messageId: string, prefix: string = "/me") =>
+    request<Record<string, never>>("POST", `${prefix}/messages/${messageId}/send`)
 
-  const sendReply = (id: string, comment: string) =>
-    request<Record<string, never>>("POST", `/me/messages/${id}/reply`, { body: { comment } })
+  const sendReply = (id: string, comment: string, prefix: string = "/me") =>
+    request<Record<string, never>>("POST", `${prefix}/messages/${id}/reply`, { body: { comment } })
 
   // Draft-creating reply actions: return a threaded draft (original quoted) for review.
-  const createReplyDraft = (id: string, comment: string) =>
-    request<GraphMessage>("POST", `/me/messages/${id}/createReply`, { body: { comment } })
+  const createReplyDraft = (id: string, comment: string, prefix: string = "/me") =>
+    request<GraphMessage>("POST", `${prefix}/messages/${id}/createReply`, { body: { comment } })
 
-  const createReplyAllDraft = (id: string, comment: string) =>
-    request<GraphMessage>("POST", `/me/messages/${id}/createReplyAll`, { body: { comment } })
+  const createReplyAllDraft = (id: string, comment: string, prefix: string = "/me") =>
+    request<GraphMessage>("POST", `${prefix}/messages/${id}/createReplyAll`, { body: { comment } })
 
   const createForwardDraft = (
     id: string,
     comment: string,
     toRecipients: ReadonlyArray<{ emailAddress: { address: string } }>,
-  ) => request<GraphMessage>("POST", `/me/messages/${id}/createForward`, { body: { comment, toRecipients } })
+    prefix: string = "/me",
+  ) => request<GraphMessage>("POST", `${prefix}/messages/${id}/createForward`, { body: { comment, toRecipients } })
 
   // Immediate-send reply actions: thread + quote, then send in one step.
-  const sendReplyAll = (id: string, comment: string) =>
-    request<Record<string, never>>("POST", `/me/messages/${id}/replyAll`, { body: { comment } })
+  const sendReplyAll = (id: string, comment: string, prefix: string = "/me") =>
+    request<Record<string, never>>("POST", `${prefix}/messages/${id}/replyAll`, { body: { comment } })
 
   const sendForward = (
     id: string,
     comment: string,
     toRecipients: ReadonlyArray<{ emailAddress: { address: string } }>,
-  ) => request<Record<string, never>>("POST", `/me/messages/${id}/forward`, { body: { comment, toRecipients } })
+    prefix: string = "/me",
+  ) => request<Record<string, never>>("POST", `${prefix}/messages/${id}/forward`, { body: { comment, toRecipients } })
 
-  const searchMessages = (query: string, odataParams?: ODataParams) =>
-    request<ODataResponse<GraphMessage>>("GET", "/me/messages", {
+  const searchMessages = (query: string, odataParams?: ODataParams, prefix: string = "/me") =>
+    request<ODataResponse<GraphMessage>>("GET", `${prefix}/messages`, {
       odataParams: { ...odataParams, $search: query },
     })
 

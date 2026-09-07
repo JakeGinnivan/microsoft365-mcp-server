@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
 vi.mock("../src/auth", () => ({ getAccessToken: vi.fn() }))
-vi.mock("../src/utils/message-refs", () => ({ resolveMessageIdOrRef: vi.fn() }))
+vi.mock("../src/utils/message-refs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/message-refs")>()),
+  resolveMessageIdOrRef: vi.fn(),
+}))
 
 import { getAccessToken } from "../src/auth"
 import { getGraphClient } from "../src/client/graph-client"
@@ -35,7 +38,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getGraphClient).mockReturnValue(Some(mockClient as never))
   vi.mocked(getAccessToken).mockResolvedValue(Right("TOKEN") as never)
-  vi.mocked(resolveMessageIdOrRef).mockImplementation((id: string) => (id === "bad-ref" ? undefined : "MSG-ID"))
+  vi.mocked(resolveMessageIdOrRef).mockImplementation((id: string) =>
+    id === "bad-ref" ? ({ kind: "unknown", ref: 0 } as never) : ({ kind: "id", id: "MSG-ID" } as never),
+  )
   outDir = join(tmpdir(), `save-attachment-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   vi.stubGlobal(
     "fetch",
@@ -102,9 +107,7 @@ describe("saveAttachment", () => {
 
   // An attachment name is chosen by whoever sent the mail. Traversal must not reach the filesystem.
   it("neutralises path traversal in the attachment name", async () => {
-    mockClient.listAttachments.mockResolvedValue(
-      Right({ value: [{ ...PDF, name: "../../../etc/authorized_keys" }] }),
-    )
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ ...PDF, name: "../../../etc/authorized_keys" }] }))
 
     const result = await saveAttachment({ message_id: "1", out_dir: outDir })
 

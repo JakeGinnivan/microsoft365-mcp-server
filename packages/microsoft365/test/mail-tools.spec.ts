@@ -59,25 +59,31 @@ describe("mail-tools", () => {
       const result = await sendMessage({ to: "alice@example.com", subject: "Hi", body: "Hello" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("alice@example.com")
-      expect(mockClient.sendMessage).toHaveBeenCalledWith({
-        message: {
-          subject: "Hi",
-          body: { contentType: "Text", content: "Hello" },
-          toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
+      expect(mockClient.sendMessage).toHaveBeenCalledWith(
+        {
+          message: {
+            subject: "Hi",
+            body: { contentType: "Text", content: "Hello" },
+            toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
+          },
         },
-      })
+        "/me",
+      )
     })
 
     it("should send a message with HTML content type", async () => {
       mockClient.sendMessage.mockResolvedValue(Right({}))
       await sendMessage({ to: "bob@example.com", subject: "Hi", body: "<b>Bold</b>", content_type: "HTML" })
-      expect(mockClient.sendMessage).toHaveBeenCalledWith({
-        message: {
-          subject: "Hi",
-          body: { contentType: "HTML", content: "<b>Bold</b>" },
-          toRecipients: [{ emailAddress: { address: "bob@example.com" } }],
+      expect(mockClient.sendMessage).toHaveBeenCalledWith(
+        {
+          message: {
+            subject: "Hi",
+            body: { contentType: "HTML", content: "<b>Bold</b>" },
+            toRecipients: [{ emailAddress: { address: "bob@example.com" } }],
+          },
         },
-      })
+        "/me",
+      )
     })
 
     it("should split comma-separated 'to' into multiple toRecipients", async () => {
@@ -117,11 +123,14 @@ describe("mail-tools", () => {
       const result = await createDraft({ to: "alice@example.com", subject: "Draft", body: "Content" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-123")
-      expect(mockClient.createDraft).toHaveBeenCalledWith({
-        subject: "Draft",
-        body: { contentType: "Text", content: "Content" },
-        toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
-      })
+      expect(mockClient.createDraft).toHaveBeenCalledWith(
+        {
+          subject: "Draft",
+          body: { contentType: "Text", content: "Content" },
+          toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
+        },
+        "/me",
+      )
     })
 
     it("should create a draft with HTML content type", async () => {
@@ -131,6 +140,7 @@ describe("mail-tools", () => {
         expect.objectContaining({
           body: { contentType: "HTML", content: "<p>Hi</p>" },
         }),
+        "/me",
       )
     })
 
@@ -149,6 +159,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "carol@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -159,6 +170,7 @@ describe("mail-tools", () => {
         expect.objectContaining({
           bccRecipients: [{ emailAddress: { address: "secret@example.com" } }],
         }),
+        "/me",
       )
     })
 
@@ -177,6 +189,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "carol@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -202,6 +215,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "carol@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -219,6 +233,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "bob@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -236,7 +251,7 @@ describe("mail-tools", () => {
       const result = await sendDraft({ message_id: "draft-123" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Draft sent successfully")
-      expect(mockClient.sendDraft).toHaveBeenCalledWith("draft-123")
+      expect(mockClient.sendDraft).toHaveBeenCalledWith("draft-123", "/me")
     })
   })
 
@@ -246,7 +261,7 @@ describe("mail-tools", () => {
       const result = await sendReply({ message_id: "msg-1", comment: "Thanks!" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Reply sent successfully")
-      expect(mockClient.sendReply).toHaveBeenCalledWith("msg-1", "Thanks!")
+      expect(mockClient.sendReply).toHaveBeenCalledWith("msg-1", "Thanks!", "/me")
     })
   })
 
@@ -256,7 +271,7 @@ describe("mail-tools", () => {
       const result = await sendReplyAll({ message_id: "msg-1", comment: "Thanks all!" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Reply-all sent successfully")
-      expect(mockClient.sendReplyAll).toHaveBeenCalledWith("msg-1", "Thanks all!")
+      expect(mockClient.sendReplyAll).toHaveBeenCalledWith("msg-1", "Thanks all!", "/me")
     })
   })
 
@@ -266,17 +281,23 @@ describe("mail-tools", () => {
       const result = await sendForward({ message_id: "msg-1", to: "alice@example.com", comment: "FYI" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("alice@example.com")
-      expect(mockClient.sendForward).toHaveBeenCalledWith("msg-1", "FYI", [
-        { emailAddress: { address: "alice@example.com" } },
-      ])
+      expect(mockClient.sendForward).toHaveBeenCalledWith(
+        "msg-1",
+        "FYI",
+        [{ emailAddress: { address: "alice@example.com" } }],
+        "/me",
+      )
     })
 
     it("should default an omitted comment to an empty string", async () => {
       mockClient.sendForward.mockResolvedValue(Right({}))
       await sendForward({ message_id: "msg-1", to: "alice@example.com" })
-      expect(mockClient.sendForward).toHaveBeenCalledWith("msg-1", "", [
-        { emailAddress: { address: "alice@example.com" } },
-      ])
+      expect(mockClient.sendForward).toHaveBeenCalledWith(
+        "msg-1",
+        "",
+        [{ emailAddress: { address: "alice@example.com" } }],
+        "/me",
+      )
     })
 
     it("should reject an empty 'to' field", async () => {
@@ -294,7 +315,7 @@ describe("mail-tools", () => {
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-r1")
       expect(result.value).toContain("send_draft")
-      expect(mockClient.createReplyDraft).toHaveBeenCalledWith("msg-1", "Will do")
+      expect(mockClient.createReplyDraft).toHaveBeenCalledWith("msg-1", "Will do", "/me")
     })
   })
 
@@ -304,7 +325,7 @@ describe("mail-tools", () => {
       const result = await createReplyAllDraft({ message_id: "msg-1", comment: "Will do" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-ra1")
-      expect(mockClient.createReplyAllDraft).toHaveBeenCalledWith("msg-1", "Will do")
+      expect(mockClient.createReplyAllDraft).toHaveBeenCalledWith("msg-1", "Will do", "/me")
     })
   })
 
@@ -314,9 +335,12 @@ describe("mail-tools", () => {
       const result = await createForwardDraft({ message_id: "msg-1", to: "alice@example.com", comment: "FYI" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-f1")
-      expect(mockClient.createForwardDraft).toHaveBeenCalledWith("msg-1", "FYI", [
-        { emailAddress: { address: "alice@example.com" } },
-      ])
+      expect(mockClient.createForwardDraft).toHaveBeenCalledWith(
+        "msg-1",
+        "FYI",
+        [{ emailAddress: { address: "alice@example.com" } }],
+        "/me",
+      )
     })
 
     it("should reject an empty 'to' field", async () => {
@@ -336,7 +360,7 @@ describe("mail-tools", () => {
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Archive")
       expect(result.value).toContain("12 items, 3 unread")
-      expect(mockClient.listMailFolders).toHaveBeenCalledWith({ $top: 100 })
+      expect(mockClient.listMailFolders).toHaveBeenCalledWith({ $top: 100 }, "/me")
     })
 
     it("should page through all folders when asked", async () => {
@@ -353,7 +377,7 @@ describe("mail-tools", () => {
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1", subject: "Receipt" }))
       const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
       expect(result.isRight()).toBe(true)
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "archive")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "archive", "/me")
       expect(mockClient.listMailFolders).not.toHaveBeenCalled()
     })
 
@@ -376,14 +400,14 @@ describe("mail-tools", () => {
     it("should map a well-known alias and ignore case", async () => {
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "Deleted Items" })
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "deleteditems")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "deleteditems", "/me")
     })
 
     it("should resolve a folder display name to its ID", async () => {
       mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-receipts", displayName: "Receipts" }] }))
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "Receipts" })
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts", "/me")
     })
 
     it("should error rather than guess when a display name is ambiguous", async () => {
@@ -406,21 +430,21 @@ describe("mail-tools", () => {
       mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Archive" }] }))
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "AAMkAGI0-opaque-id" })
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "AAMkAGI0-opaque-id")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "AAMkAGI0-opaque-id", "/me")
     })
   })
   describe("getMessage body_format", () => {
     it("should request no Prefer header by default", async () => {
       mockClient.getMessage.mockResolvedValue(Right({ id: "m1", subject: "Hi" }))
       await getMessage({ message_id: "m1" })
-      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", undefined)
+      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", undefined, "/me")
     })
 
     // Marketing mail is mostly CSS; asking Graph for text is a large context saving.
     it("should pass the requested body format through", async () => {
       mockClient.getMessage.mockResolvedValue(Right({ id: "m1", subject: "Hi" }))
       await getMessage({ message_id: "m1", body_format: "text" })
-      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", "text")
+      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", "text", "/me")
     })
   })
 
@@ -571,6 +595,6 @@ describe("scan refs work across message tools", () => {
 
     await listAttachments({ message_id: graphId })
 
-    expect(mockClient.listAttachments).toHaveBeenCalledWith(graphId)
+    expect(mockClient.listAttachments).toHaveBeenCalledWith(graphId, "/me")
   })
 })
