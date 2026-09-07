@@ -183,15 +183,67 @@ az rest --method POST \
 
 Or in Azure Portal: Enterprise Applications > your app > Users and groups > Add user.
 
+### Other Mailboxes (Delegated and Shared)
+
+Mail tools take an optional `mailbox` parameter — an email address — so one server can
+work across a household or a team: your own mail by default, someone else's when named.
+
+```bash
+MS365_ALLOWED_MAILBOXES="bel@example.com,household@example.com"
+```
+
+Nothing is reachable until it is listed. Omitting `mailbox` always means your own
+mailbox, so existing setups need no configuration and behave exactly as before.
+
+Two boundaries apply, and both matter:
+
+| Boundary                  | Set by                                                 | What it does                                                                              |
+| ------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Azure                     | Delegation, or an ApplicationAccessPolicy for app-only | Caps what the credential can reach at all. The real enforcement.                          |
+| `MS365_ALLOWED_MAILBOXES` | This server                                            | Narrows one deployment within that cap, and returns a clear error instead of a Graph 403. |
+
+The env var is configuration, not security: it lets a single app registration serve
+several agents with different reach — a triage bot limited to one mailbox, an assistant
+given two — without minting a registration per agent. It cannot widen what Azure allows.
+
+**Which permission you need depends on how the server authenticates:**
+
+- **Interactive / OAuth proxy (delegated).** Reaching another mailbox needs a `.Shared`
+  scope; the non-shared one does not grant it. Add it explicitly:
+
+  ```bash
+  MS365_EXTRA_SCOPES="Mail.ReadWrite.Shared"   # or Mail.Read.Shared for read-only
+  ```
+
+  The mailbox's owner must also have granted you delegate access (in Outlook, or via
+  `Add-MailboxPermission`). Actions are performed as you: Exchange audit records
+  distinguish delegate access from owner access, but not one delegate tool from another.
+
+- **Client secret / certificate (app-only).** These request `.default`, so permissions
+  come from the app registration — nothing to add here. There is no `/me` for an app-only
+  token, so `mailbox` is **required** on every mail call. Scope the app to specific
+  mailboxes with an ApplicationAccessPolicy, otherwise `Mail.ReadWrite` reaches every
+  mailbox in the tenant:
+
+  ```powershell
+  New-ApplicationAccessPolicy -AppId <app-id> `
+    -PolicyScopeGroupId mailbox-group@example.com -AccessRight RestrictAccess
+  ```
+
+Note that `scan_messages` refs are per-mailbox: a ref from one mailbox passed to a call
+addressing another is refused with an explanation rather than resolving to the wrong
+message.
+
 ### Safety Layers
 
-| Layer                    | Protection                                               | Default            |
-| ------------------------ | -------------------------------------------------------- | ------------------ |
-| **User assignment**      | Only assigned users can authenticate                     | Off (enable above) |
-| **Platform governance**  | Per-tool allow/confirm/deny in Claude Desktop Enterprise | Platform-level     |
-| **Tool filtering**       | Presets, read-only, org-mode gating                      | All tools          |
-| **Tenant restriction**   | `MS365_TENANT_ID` locks to one org                       | `common`           |
-| **M365 native recovery** | Recycle bins, version history                            | Built-in           |
+| Layer                    | Protection                                                   | Default            |
+| ------------------------ | ------------------------------------------------------------ | ------------------ |
+| **User assignment**      | Only assigned users can authenticate                         | Off (enable above) |
+| **Platform governance**  | Per-tool allow/confirm/deny in Claude Desktop Enterprise     | Platform-level     |
+| **Tool filtering**       | Presets, read-only, org-mode gating                          | All tools          |
+| **Mailbox allowlist**    | `MS365_ALLOWED_MAILBOXES` caps which mailboxes are reachable | Own mailbox only   |
+| **Tenant restriction**   | `MS365_TENANT_ID` locks to one org                           | `common`           |
+| **M365 native recovery** | Recycle bins, version history                                | Built-in           |
 
 **Recovery by domain:**
 
@@ -260,13 +312,13 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 > quoted history) for review, then send via `send_draft`. They remain available under
 > `MS365_REQUIRE_DRAFT=true`; the `send_*` tools are hidden in that mode.
 
-> **Reading attachments.** `read_document` extracts *text*, so a scanned PDF or a
+> **Reading attachments.** `read_document` extracts _text_, so a scanned PDF or a
 > photographed letter comes back empty — there is no text layer to extract. Use
 > `save_attachment` for those: it writes the file locally and returns the path, leaving
 > the client to read the PDF or image with whatever it already has. That keeps
 > rasterising and OCR out of this server.
 >
-> **Cloud links are not files.** A *reference attachment* — a OneDrive, SharePoint or
+> **Cloud links are not files.** A _reference attachment_ — a OneDrive, SharePoint or
 > Dropbox link someone attached instead of a file — has no bytes in the mailbox, so
 > neither tool can fetch it. Both now **report the link and its URL** rather than
 > failing or omitting it, because a hidden link is a document you do not know exists.
@@ -429,6 +481,7 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 | `MS365_PRESETS`           | Comma-separated presets: `personal`, `collaboration`, `productivity`, `rag`, `all`      | -- (all tools)      |
 | `MS365_EXTRA_SCOPES`      | Comma-separated Graph scopes added to the requested set (OAuth proxy mode)              | --                  |
 | `MS365_MAX_EXTRACT_BYTES` | Ceiling over `read_document`'s per-format input caps, in bytes. Never raises them.      | -- (per-format)     |
+| `MS365_ALLOWED_MAILBOXES` | Comma-separated addresses the `mailbox` parameter may target. Unset = own mailbox only  | --                  |
 | `MS365_ENABLED_TOOLS`     | Regex pattern to filter tools                                                           | --                  |
 | `MS365_READ_ONLY`         | Hide write tools                                                                        | `false`             |
 | `MS365_ORG_MODE`          | Enable org-only tools (teams, chats, groups, planner)                                   | `false`             |
@@ -441,15 +494,15 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 Every Graph call goes through a retry / timeout / circuit-breaker layer. The defaults suit
 normal use; these knobs exist for tuning a deployment without a code change.
 
-| Variable                            | Description                                                                     | Default   |
-| ----------------------------------- | ------------------------------------------------------------------------------- | --------- |
-| `MS365_GRAPH_MAX_RETRIES`           | Retries for a throttled (429) or transient (503/504/network) call                | `3`       |
-| `MS365_GRAPH_TIMEOUT_MS`            | Per-attempt fetch timeout. Sized for slow large uploads                          | `100000`  |
-| `MS365_GRAPH_BASE_BACKOFF_MS`       | Base for exponential backoff with full jitter                                    | `200`     |
-| `MS365_GRAPH_MAX_BACKOFF_MS`        | Backoff ceiling. A 429's `Retry-After` overrides it (capped at 60 s)             | `5000`    |
-| `MS365_GRAPH_CIRCUIT_THRESHOLD`     | Consecutive failures before the breaker opens                                    | `5`       |
-| `MS365_GRAPH_CIRCUIT_COOLDOWN_MS`   | How long the breaker stays open before allowing a probe                          | `30000`   |
-| `MS365_GRAPH_CIRCUIT_DISABLED`      | Disable the breaker entirely                                                     | `false`   |
+| Variable                          | Description                                                          | Default  |
+| --------------------------------- | -------------------------------------------------------------------- | -------- |
+| `MS365_GRAPH_MAX_RETRIES`         | Retries for a throttled (429) or transient (503/504/network) call    | `3`      |
+| `MS365_GRAPH_TIMEOUT_MS`          | Per-attempt fetch timeout. Sized for slow large uploads              | `100000` |
+| `MS365_GRAPH_BASE_BACKOFF_MS`     | Base for exponential backoff with full jitter                        | `200`    |
+| `MS365_GRAPH_MAX_BACKOFF_MS`      | Backoff ceiling. A 429's `Retry-After` overrides it (capped at 60 s) | `5000`   |
+| `MS365_GRAPH_CIRCUIT_THRESHOLD`   | Consecutive failures before the breaker opens                        | `5`      |
+| `MS365_GRAPH_CIRCUIT_COOLDOWN_MS` | How long the breaker stays open before allowing a probe              | `30000`  |
+| `MS365_GRAPH_CIRCUIT_DISABLED`    | Disable the breaker entirely                                         | `false`  |
 
 A 429 is retried on every method — Graph decides to throttle before it executes the
 operation, so nothing has landed server-side. A 503/504/network failure is retried only

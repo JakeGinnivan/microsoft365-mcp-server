@@ -23,7 +23,7 @@ import {
   sendReplyAll,
 } from ".."
 import type { ToolDefinition } from "../tool-definitions"
-import { FETCH_ALL_PAGES_PARAM, unwrapResult } from "./shared"
+import { FETCH_ALL_PAGES_PARAM, MAILBOX_PARAM, unwrapResult } from "./shared"
 
 export const mailTools: ReadonlyArray<ToolDefinition> = [
   {
@@ -33,6 +33,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       top: z.number().optional().describe("Number of messages to return (default: 25)"),
       filter: z.string().optional().describe("OData filter expression"),
       fetch_all_pages: FETCH_ALL_PAGES_PARAM,
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await listMessages(params)),
     domain: "mail",
@@ -66,6 +67,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
         ),
       top: z.number().optional().describe("Rows per page (default 100, max 999)"),
       skip: z.number().optional().describe("Rows to skip, for paging through large folders"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await scanMessages(params)),
     domain: "mail",
@@ -82,6 +84,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
         .enum(["text", "html"])
         .optional()
         .describe("Body format to request. 'text' strips HTML/CSS server-side. Default: the message's own format"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await getMessage(params)),
     domain: "mail",
@@ -93,6 +96,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     description: "List mail folders with item and unread counts, for resolving move destinations",
     parameters: z.object({
       fetch_all_pages: FETCH_ALL_PAGES_PARAM,
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await listMailFolders(params)),
     domain: "mail",
@@ -108,6 +112,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       destination: z
         .string()
         .describe("Destination folder: well-known name (e.g. archive), display name, or folder ID"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await moveMessage(params)),
     domain: "mail",
@@ -123,6 +128,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       destination: z
         .string()
         .describe("Destination folder: well-known name (e.g. archive), display name, or folder ID"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await batchMoveMessages(params)),
     domain: "mail",
@@ -138,6 +144,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       "so they must be opened rather than fetched.",
     parameters: z.object({
       message_id: z.string().describe("The message ID whose attachments to list"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await listAttachments(params)),
     domain: "mail",
@@ -159,6 +166,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
         .optional()
         .describe("Which attachment to save. Optional when the message has exactly one."),
       out_dir: z.string().optional().describe("Directory to write into (default: the system temp directory)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await saveAttachment(params)),
     domain: "mail",
@@ -173,6 +181,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       subject: z.string().describe("Email subject"),
       body: z.string().describe("Email body content"),
       content_type: z.string().optional().describe("Body content type: Text or HTML (default: Text)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await sendMessage(params)),
     domain: "mail",
@@ -186,6 +195,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     parameters: z.object({
       message_id: z.string().describe("The message ID to reply to"),
       comment: z.string().describe("Reply content (added above the quoted original)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await sendReply(params)),
     domain: "mail",
@@ -199,6 +209,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     parameters: z.object({
       message_id: z.string().describe("The message ID to reply to"),
       comment: z.string().describe("Reply content (added above the quoted original)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await sendReplyAll(params)),
     domain: "mail",
@@ -213,6 +224,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       message_id: z.string().describe("The message ID to forward"),
       to: z.string().describe("Recipient email address(es), comma-separated for multiple"),
       comment: z.string().optional().describe("Optional note added above the quoted original"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await sendForward(params)),
     domain: "mail",
@@ -226,6 +238,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     parameters: z.object({
       message_id: z.string().describe("The message ID to reply to"),
       comment: z.string().describe("Reply content (added above the quoted original)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await createReplyDraft(params)),
     domain: "mail",
@@ -238,6 +251,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     parameters: z.object({
       message_id: z.string().describe("The message ID to reply to"),
       comment: z.string().describe("Reply content (added above the quoted original)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await createReplyAllDraft(params)),
     domain: "mail",
@@ -251,6 +265,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       message_id: z.string().describe("The message ID to forward"),
       to: z.string().describe("Recipient email address(es), comma-separated for multiple"),
       comment: z.string().optional().describe("Optional note added above the quoted original"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await createForwardDraft(params)),
     domain: "mail",
@@ -262,6 +277,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     parameters: z.object({
       query: z.string().describe("Search query string"),
       top: z.number().optional().describe("Number of results to return (default: 25)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await searchMessages(params)),
     domain: "mail",
@@ -278,6 +294,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       content_type: z.string().optional().describe("Body content type: Text or HTML (default: Text)"),
       cc: z.string().optional().describe("CC recipients (comma-separated email addresses)"),
       bcc: z.string().optional().describe("BCC recipients (comma-separated email addresses)"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await createDraft(params)),
     domain: "mail",
@@ -288,6 +305,7 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
     description: "Send an existing email draft",
     parameters: z.object({
       message_id: z.string().describe("The draft message ID to send"),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await sendDraft(params)),
     domain: "mail",
