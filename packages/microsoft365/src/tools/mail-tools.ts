@@ -3,8 +3,16 @@ import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
+import { type MailboxScope, resolveMailboxScope } from "../mail/mailbox"
 import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
-import { formatAttachmentList, formatMailFolderList, formatMessageDetail, formatMessageList } from "../utils/formatters"
+import {
+  formatAttachmentList,
+  formatMailFolderList,
+  formatMessageDetail,
+  formatMessageList,
+  formatMessageScan,
+} from "../utils/formatters"
+import { describeRefFailure, rememberMessageId, resolveMessageIdOrRef } from "../utils/message-refs"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -12,16 +20,46 @@ const requireClient = () => {
   return client.orThrow()
 }
 
+// scan_messages hands back short refs instead of 152-character Graph IDs. Every tool
+// that takes a message_id should accept either, otherwise the scan-then-act loop
+// breaks at whichever tool was overlooked — which is what happened with
+// list_attachments, the tool an attachment sweep depends on most.
+const resolveMessageId = (idOrRef: string, scope: MailboxScope): Either<UserError, string> => {
+  const resolved = resolveMessageIdOrRef(idOrRef, scope.mailbox)
+  return resolved.kind === "id" ? Right(resolved.id) : Left(new UserError(describeRefFailure(resolved, scope.mailbox)))
+}
+
+// Every mail tool starts the same way: resolve the mailbox, then get the client. Both
+// can fail with a UserError, and neither is worth repeating twenty times.
+type ScopedClient = { scope: MailboxScope; client: NonNullable<ReturnType<typeof requireClient>> }
+
+const withScope = (mailbox: string | undefined): Either<UserError, ScopedClient> => {
+  const scope = resolveMailboxScope(mailbox)
+  if (scope.isLeft()) return Left(scope.value as UserError)
+
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  return Right({ scope: scope.orThrow(), client })
+}
+
+// A failed scope carries a UserError and no Right value, so it cannot simply be cast
+// to the handler's return type — re-wrap the error instead.
+const scopeFailure = (resolved: Either<UserError, ScopedClient>): Either<UserError, string> =>
+  Left(resolved.value as UserError)
+
 export const listMessages = async (params: {
   top?: number
   filter?: string
   fetch_all_pages?: boolean
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
   if (params.fetch_all_pages) {
-    const result = await client.requestPaginated<GraphMessage>("/me/messages", {
+    const result = await client.requestPaginated<GraphMessage>(`${scope.prefix}/messages`, {
       odataParams: { $filter: params.filter, $orderby: "receivedDateTime desc" },
     })
     return result
@@ -29,11 +67,14 @@ export const listMessages = async (params: {
       .map((items) => formatMessageList(items))
   }
 
-  const result = await client.listMessages({
-    $top: params.top ?? 25,
-    $filter: params.filter,
-    $orderby: "receivedDateTime desc",
-  })
+  const result = await client.listMessages(
+    {
+      $top: params.top ?? 25,
+      $filter: params.filter,
+      $orderby: "receivedDateTime desc",
+    },
+    scope.prefix,
+  )
   return result
     .mapLeft((error) => new UserError(`Failed to list messages: ${error.message}`))
     .map((response) => formatMessageList((response as ODataResponse<never>).value))
@@ -42,26 +83,35 @@ export const listMessages = async (params: {
 export const getMessage = async (params: {
   message_id: string
   body_format?: "text" | "html"
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const result = await client.getMessage(params.message_id, params.body_format)
+  const messageId = resolveMessageId(params.message_id, scope)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+
+  const result = await client.getMessage(messageId.orThrow(), params.body_format, scope.prefix)
   return result.mapLeft((error) => new UserError(`Failed to get message: ${error.message}`)).map(formatMessageDetail)
 }
 
-export const listMailFolders = async (params?: { fetch_all_pages?: boolean }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+export const listMailFolders = async (params?: {
+  fetch_all_pages?: boolean
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolved = withScope(params?.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
   if (params?.fetch_all_pages) {
-    const result = await client.requestPaginated<GraphMailFolder>("/me/mailFolders")
+    const result = await client.requestPaginated<GraphMailFolder>(`${scope.prefix}/mailFolders`)
     return result
       .mapLeft((error) => new UserError(`Failed to list mail folders: ${error.message}`))
       .map((items) => formatMailFolderList(items))
   }
 
-  const result = await client.listMailFolders({ $top: 100 })
+  const result = await client.listMailFolders({ $top: 100 }, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to list mail folders: ${error.message}`))
     .map((response) => formatMailFolderList((response as ODataResponse<never>).value))
@@ -86,13 +136,16 @@ const WELL_KNOWN_FOLDERS: ReadonlyMap<string, string> = new Map([
 const resolveDestination = async (
   client: NonNullable<ReturnType<typeof requireClient>>,
   destination: string,
+  scope: MailboxScope,
 ): Promise<Either<UserError, string>> => {
   const normalized = destination.trim().toLowerCase()
   const wellKnown = WELL_KNOWN_FOLDERS.get(normalized)
   if (wellKnown) return Right(wellKnown)
 
-  // Otherwise treat it as a folder display name and look it up.
-  const result = await client.listMailFolders({ $top: 100 })
+  // Otherwise treat it as a folder display name and look it up — in the mailbox being
+  // addressed, not the signed-in user's. Folder IDs are per-mailbox, so resolving a
+  // name against the wrong one yields an ID that is missing (or, worse, valid) there.
+  const result = await client.listMailFolders({ $top: 100 }, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to resolve destination folder: ${error.message}`))
     .flatMap((response) => {
@@ -113,14 +166,19 @@ const resolveDestination = async (
 export const moveMessage = async (params: {
   message_id: string
   destination: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const destination = await resolveDestination(client, params.destination)
+  const messageId = resolveMessageId(params.message_id, scope)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+
+  const destination = await resolveDestination(client, params.destination, scope)
   if (destination.isLeft()) return destination
 
-  const result = await client.moveMessage(params.message_id, destination.orThrow())
+  const result = await client.moveMessage(messageId.orThrow(), destination.orThrow(), scope.prefix)
   // Deliberately terse: triage moves messages in batches, and echoing each message body
   // back (formatMessageDetail) floods an LLM caller's context with mail the caller has
   // already decided to file. Subject and destination are enough to confirm the move.
@@ -140,9 +198,11 @@ const BATCH_MOVE_LIMIT = 50
 export const batchMoveMessages = async (params: {
   message_ids: ReadonlyArray<string>
   destination: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
 
   if (params.message_ids.length === 0) return Left(new UserError("At least one message ID is required."))
   if (params.message_ids.length > BATCH_MOVE_LIMIT) {
@@ -153,18 +213,23 @@ export const batchMoveMessages = async (params: {
     )
   }
 
-  const destination = await resolveDestination(client, params.destination)
+  const destination = await resolveDestination(client, params.destination, scope)
   if (destination.isLeft()) return destination
   const destinationId = destination.orThrow()
 
   // Sequential on purpose: Graph throttles per-mailbox, and a 429 midway through a
   // parallel batch leaves the caller unsure which moves actually landed. Reducing over
   // a promise chain keeps that ordering without an imperative loop.
-  const moveOne = async (id: string): Promise<MoveOutcome> => {
-    const result = await client.moveMessage(id, destinationId)
+  const moveOne = async (idOrRef: string): Promise<MoveOutcome> => {
+    const resolved = resolveMessageIdOrRef(idOrRef, scope.mailbox)
+    // An unresolvable ref fails as its own outcome rather than aborting the batch:
+    // filing dozens of messages should not be lost to one stale ref.
+    if (resolved.kind !== "id") return { id: idOrRef, error: describeRefFailure(resolved, scope.mailbox) }
+
+    const result = await client.moveMessage(resolved.id, destinationId, scope.prefix)
     return result.fold<MoveOutcome>(
-      (error) => ({ id, error: (error as { message: string }).message }),
-      (msg) => ({ id, subject: (msg as GraphMessage).subject }),
+      (error) => ({ id: idOrRef, error: (error as { message: string }).message }),
+      (msg) => ({ id: idOrRef, subject: (msg as GraphMessage).subject }),
     )
   }
 
@@ -184,14 +249,22 @@ export const batchMoveMessages = async (params: {
   return failed.length === 0 ? Right(summary) : Right(`${summary}\n\n${failed.length} failed:\n${failureLines}`)
 }
 
-export const listAttachments = async (params: { message_id: string }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+export const listAttachments = async (params: {
+  message_id: string
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const result = await client.listAttachments(params.message_id)
+  const messageId = resolveMessageId(params.message_id, scope)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+  const id = messageId.orThrow()
+
+  const result = await client.listAttachments(id, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to list attachments: ${error.message}`))
-    .map((response) => formatAttachmentList(params.message_id, (response as ODataResponse<GraphAttachment>).value))
+    .map((response) => formatAttachmentList(id, (response as ODataResponse<GraphAttachment>).value))
 }
 
 export const sendMessage = async (params: {
@@ -199,20 +272,25 @@ export const sendMessage = async (params: {
   subject: string
   body: string
   content_type?: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
   const toRecipients = parseRecipients(params.to)
   if (!toRecipients) return Left(new UserError("At least one recipient is required in the 'to' field."))
 
-  const result = await client.sendMessage({
-    message: {
-      subject: params.subject,
-      body: { contentType: params.content_type ?? "Text", content: params.body },
-      toRecipients,
+  const result = await client.sendMessage(
+    {
+      message: {
+        subject: params.subject,
+        body: { contentType: params.content_type ?? "Text", content: params.body },
+        toRecipients,
+      },
     },
-  })
+    scope.prefix,
+  )
   return result
     .mapLeft((error) => new UserError(`Failed to send message: ${error.message}`))
     .map(() => `Message sent to ${params.to}.`)
@@ -221,11 +299,13 @@ export const sendMessage = async (params: {
 export const sendReply = async (params: {
   message_id: string
   comment: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const result = await client.sendReply(params.message_id, params.comment)
+  const result = await client.sendReply(params.message_id, params.comment, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to reply: ${error.message}`))
     .map(() => "Reply sent successfully.")
@@ -234,11 +314,13 @@ export const sendReply = async (params: {
 export const sendReplyAll = async (params: {
   message_id: string
   comment: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const result = await client.sendReplyAll(params.message_id, params.comment)
+  const result = await client.sendReplyAll(params.message_id, params.comment, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to reply-all: ${error.message}`))
     .map(() => "Reply-all sent successfully.")
@@ -248,14 +330,16 @@ export const sendForward = async (params: {
   message_id: string
   to: string
   comment?: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
   const toRecipients = parseRecipients(params.to)
   if (!toRecipients) return Left(new UserError("At least one recipient is required in the 'to' field."))
 
-  const result = await client.sendForward(params.message_id, params.comment ?? "", toRecipients)
+  const result = await client.sendForward(params.message_id, params.comment ?? "", toRecipients, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to forward: ${error.message}`))
     .map(() => `Message forwarded to ${params.to}.`)
@@ -264,11 +348,13 @@ export const sendForward = async (params: {
 export const createReplyDraft = async (params: {
   message_id: string
   comment: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const result = await client.createReplyDraft(params.message_id, params.comment)
+  const result = await client.createReplyDraft(params.message_id, params.comment, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to create reply draft: ${error.message}`))
     .map(
@@ -280,11 +366,13 @@ export const createReplyDraft = async (params: {
 export const createReplyAllDraft = async (params: {
   message_id: string
   comment: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
-  const result = await client.createReplyAllDraft(params.message_id, params.comment)
+  const result = await client.createReplyAllDraft(params.message_id, params.comment, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to create reply-all draft: ${error.message}`))
     .map(
@@ -297,14 +385,16 @@ export const createForwardDraft = async (params: {
   message_id: string
   to: string
   comment?: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolved = withScope(params.mailbox)
+  if (resolved.isLeft()) return scopeFailure(resolved)
+  const { scope, client } = resolved.orThrow()
 
   const toRecipients = parseRecipients(params.to)
   if (!toRecipients) return Left(new UserError("At least one recipient is required in the 'to' field."))
 
-  const result = await client.createForwardDraft(params.message_id, params.comment ?? "", toRecipients)
+  const result = await client.createForwardDraft(params.message_id, params.comment ?? "", toRecipients, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to create forward draft: ${error.message}`))
     .map(
@@ -332,9 +422,11 @@ export const createDraft = async (params: {
   content_type?: string
   cc?: string
   bcc?: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
 
   const toRecipients = parseRecipients(params.to)
   if (!toRecipients) return Left(new UserError("At least one recipient is required in the 'to' field."))
@@ -351,28 +443,113 @@ export const createDraft = async (params: {
   const bcc = parseRecipients(params.bcc)
   if (bcc) message.bccRecipients = bcc
 
-  const result = await client.createDraft(message)
+  const result = await client.createDraft(message, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to create draft: ${error.message}`))
     .map((msg) => `Draft created. ID: ${(msg as { id: string }).id}`)
 }
 
-export const sendDraft = async (params: { message_id: string }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+export const sendDraft = async (params: {
+  message_id: string
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
 
-  const result = await client.sendDraft(params.message_id)
+  const result = await client.sendDraft(params.message_id, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to send draft: ${error.message}`))
     .map(() => "Draft sent successfully.")
 }
 
-export const searchMessages = async (params: { query: string; top?: number }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+export const searchMessages = async (params: {
+  query: string
+  top?: number
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
 
-  const result = await client.searchMessages(params.query, { $top: params.top ?? 25 })
+  const result = await client.searchMessages(params.query, { $top: params.top ?? 25 }, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to search messages: ${error.message}`))
     .map((response) => formatMessageList((response as ODataResponse<never>).value))
+}
+
+// Only the fields the scan actually prints. Graph returns the full message
+// otherwise — including bodyPreview, which alone can be several hundred characters
+// per message and is the single biggest waste when scanning thousands of headers.
+const SCAN_FIELDS = ["id", "subject", "from", "receivedDateTime", "isRead", "hasAttachments"] as const
+
+// Graph's own ceiling for $top on messages.
+const MAX_PAGE = 999
+
+export const scanMessages = async (params: {
+  folder?: string
+  filter?: string
+  search?: string
+  top?: number
+  skip?: number
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
+
+  const top = Math.min(params.top ?? 100, MAX_PAGE)
+
+  // Graph ignores $skip when $search is set — it does not error, it silently returns
+  // the first page again. A caller paging a search would therefore re-read the same
+  // rows while believing it was advancing, and conclude it had seen everything.
+  // Refusing the combination is the only way to make that visible.
+  if (params.search && params.skip !== undefined) {
+    return Left(
+      new UserError(
+        "skip cannot be combined with search: Graph ignores $skip on a $search query and would silently return the first page again. " +
+          "Page a search by narrowing it instead — add a received range to the search string " +
+          '(e.g. "invoice AND received:2024-01-01..2024-06-30") and walk the windows.',
+      ),
+    )
+  }
+
+  // Ask for one extra row: if it comes back, there is a further page, and the caller
+  // learns that without paying for a separate $count request.
+  const odataParams = {
+    $select: [...SCAN_FIELDS],
+    $filter: params.filter,
+    $search: params.search,
+    $top: top + 1,
+    $skip: params.skip,
+    // $search and $orderby are mutually exclusive in Graph — asking for both is a
+    // 400, so relevance ordering wins whenever a search term is present.
+    $orderby: params.search ? undefined : "receivedDateTime desc",
+  }
+
+  const resolvedFolder = params.folder ? await resolveDestination(client, params.folder, scope) : undefined
+  if (resolvedFolder?.isLeft()) return resolvedFolder as Either<UserError, string>
+  const folderId = resolvedFolder?.orThrow()
+
+  const result = folderId
+    ? await client.listFolderMessages(folderId, odataParams, scope.prefix)
+    : await client.listMessages(odataParams, scope.prefix)
+
+  return result
+    .mapLeft((error) => new UserError(`Failed to scan messages: ${error.message}`))
+    .map((response) => {
+      const all = (response as ODataResponse<GraphMessage>).value
+      const hasMore = all.length > top
+      const page = hasMore ? all.slice(0, top) : all
+      const refs = page.map((msg) => rememberMessageId(msg.id, scope.mailbox))
+
+      return formatMessageScan(page, refs, {
+        folder: params.folder,
+        hasMore,
+        // A search cannot be paged with skip (see above), so the caller is told to
+        // narrow instead. Only a filter/list scan gets a usable next offset.
+        nextSkip: params.search ? undefined : (params.skip ?? 0) + top,
+        searched: params.search !== undefined,
+      })
+    })
 }
