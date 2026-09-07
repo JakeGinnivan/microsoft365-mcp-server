@@ -63,15 +63,39 @@ const createGraphClient = (auth: AuthStrategy) => {
   const listMailFolders = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
 
+  // Scoped to one folder. /me/messages spans the whole mailbox, so scanning an
+  // archive without this means paging through inbox and sent mail to reach it.
+  const listFolderMessages = (folderId: string, odataParams?: ODataParams) =>
+    request<ODataResponse<GraphMessage>>("GET", `/me/mailFolders/${folderId}/messages`, { odataParams })
+
   const moveMessage = (id: string, destinationId: string) =>
     request<GraphMessage>("POST", `/me/messages/${id}/move`, { body: { destinationId } })
 
-  // $select omits contentBytes deliberately: fileAttachment includes the full base64 payload
-  // by default, which would drag megabytes of binary through the model for a listing.
+  // No $select here, deliberately — see the two constraints it has to satisfy at once.
+  //
+  // sourceUrl/providerType/permission/isFolder exist only on referenceAttachment, and
+  // @odata.type is what tells the callers which kind of attachment they have. Graph validates
+  // $select against the *base* attachment type, so naming a derived property bare rejects the
+  // entire request — "Could not find a property named 'sourceUrl' on type
+  // 'microsoft.graph.attachment'" — for every message in the mailbox, whether or not it carries a
+  // cloud link. Selecting only the base properties would parse, but then drops @odata.type and
+  // the reference fields, which is the bug this endpoint had before: cloud links were invisible.
+  //
+  // So: ask for everything, and drop contentBytes here instead. That was the only reason to
+  // $select in the first place — a fileAttachment carries its full base64 payload inline, which
+  // would drag megabytes of binary through the model for what is meant to be a listing.
+  const stripContentBytes = (response: ODataResponse<GraphAttachment>): ODataResponse<GraphAttachment> => ({
+    ...response,
+    value: response.value.map((att) => {
+      const { contentBytes: _discarded, ...rest } = att as GraphAttachment & { contentBytes?: string }
+      return rest as GraphAttachment
+    }),
+  })
+
   const listAttachments = (messageId: string) =>
-    request<ODataResponse<GraphAttachment>>("GET", `/me/messages/${messageId}/attachments`, {
-      odataParams: { $select: ["id", "name", "contentType", "size", "isInline", "lastModifiedDateTime"] },
-    })
+    request<ODataResponse<GraphAttachment>>("GET", `/me/messages/${messageId}/attachments`).then((result) =>
+      result.map(stripContentBytes),
+    )
 
   const sendMessage = (message: Record<string, unknown>) =>
     request<Record<string, never>>("POST", "/me/sendMail", { body: message })
@@ -460,6 +484,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     requestPaginated,
     // Mail
     listMessages,
+    listFolderMessages,
     getMessage,
     listAttachments,
     listMailFolders,

@@ -17,6 +17,8 @@ import {
   createReplyDraft,
   listAttachments,
   getMessage,
+  scanMessages,
+  listAttachments as listAttachmentsTool,
   listMailFolders,
   moveMessage,
   sendDraft,
@@ -39,6 +41,8 @@ const mockClient = {
   getMessage: vi.fn(),
   listAttachments: vi.fn(),
   listMailFolders: vi.fn(),
+  listFolderMessages: vi.fn(),
+  listMessages: vi.fn(),
   moveMessage: vi.fn(),
   requestPaginated: vi.fn(),
 }
@@ -513,5 +517,60 @@ describe("mail-tools", () => {
       expect(result.isLeft()).toBe(true)
       expect((result.value as Error).message).toContain("Failed to list attachments")
     })
+  })
+})
+
+describe("scanMessages paging safety", () => {
+  // Graph silently ignores $skip when $search is set: it returns page one again
+  // rather than erroring. A caller paging a search would re-read the same rows while
+  // believing it was advancing, then conclude the mailbox held nothing more. Failing
+  // loudly is the only way that surfaces.
+  it("refuses skip combined with search, and says how to page instead", async () => {
+    const result = await scanMessages({ search: "invoice", skip: 100 })
+
+    expect(result.isLeft()).toBe(true)
+    const message = (result.value as { message: string }).message
+    expect(message).toContain("silently")
+    expect(message).toContain("received:")
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+
+  it("allows skip on a filter scan, which Graph does honour", async () => {
+    mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+
+    const result = await scanMessages({ filter: "hasAttachments eq true", skip: 100 })
+
+    expect(result.isRight()).toBe(true)
+    expect(mockClient.listMessages).toHaveBeenCalled()
+  })
+
+  it("allows search on its own", async () => {
+    mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+
+    const result = await scanMessages({ search: "invoice" })
+
+    expect(result.isRight()).toBe(true)
+  })
+})
+
+describe("scan refs work across message tools", () => {
+  // scan_messages returns short refs, but only get_message resolved them at first.
+  // list_attachments — the tool an attachment sweep leans on hardest — rejected them
+  // as malformed IDs, breaking the scan-then-open loop at exactly the wrong point.
+  it("rejects an unknown ref with guidance instead of a Graph error", async () => {
+    const result = await listAttachments({ message_id: "999999" })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain("scan_messages")
+    expect(mockClient.listAttachments).not.toHaveBeenCalled()
+  })
+
+  it("still passes a full Graph ID straight through", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [] }))
+    const graphId = "AAMkAGI0YjA3OTNhLWY2MDEtNGZlYy1hNzU2LTE4NDFiODg5ZjliMg=="
+
+    await listAttachments({ message_id: graphId })
+
+    expect(mockClient.listAttachments).toHaveBeenCalledWith(graphId)
   })
 })

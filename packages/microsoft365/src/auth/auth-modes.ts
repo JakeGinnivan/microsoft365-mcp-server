@@ -4,16 +4,46 @@ import {
   ClientSecretCredential,
   DeviceCodeCredential,
   InteractiveBrowserCredential,
+  useIdentityPlugin,
 } from "@azure/identity"
+import { Ref } from "functype"
 import { type Either, Left, Right } from "functype/either"
 import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
+import {
+  type AuthenticationRecordLike,
+  fileCachePersistencePlugin,
+  readAuthenticationRecord,
+  writeAuthenticationRecord,
+} from "./token-cache"
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
 const DEFAULT_REDIRECT_URI = "http://localhost:3000"
+
+const TOKEN_CACHE_NAME = "microsoft365-mcp-server"
+
+// useIdentityPlugin mutates module-level state in @azure/identity, so it must run once
+// and before any credential is constructed. Ref holds the one-shot flag without a
+// mutable binding, matching the functional style enforced across this package.
+const cacheRegistered = Ref(false)
+
+const enableTokenCachePersistence = (): boolean => {
+  // Opt out with MS365_TOKEN_CACHE=false — e.g. a shared machine, or a CI run where a
+  // persisted token would outlive the job.
+  if (process.env.MS365_TOKEN_CACHE === "false") return false
+
+  if (!cacheRegistered.get()) {
+    useIdentityPlugin(fileCachePersistencePlugin)
+    cacheRegistered.set(true)
+  }
+  return true
+}
+
+/** Test seam: reset the one-shot plugin registration. */
+export const resetTokenCacheRegistrationForTests = (): void => cacheRegistered.set(false)
 
 const tryCredential = (fn: () => TokenCredential, label: string): Either<AuthError, TokenCredential> =>
   Try(fn).fold(
@@ -43,10 +73,15 @@ export const createCredential = (config: AuthConfig): Either<AuthError, TokenCre
   }
 }
 
-const createDeviceCodeCredential = (tenantId: string | undefined, clientId: string): TokenCredential =>
+const createDeviceCodeCredential = (
+  tenantId: string | undefined,
+  clientId: string,
+  tokenCachePersistenceOptions?: { enabled: boolean; name: string },
+): TokenCredential =>
   new DeviceCodeCredential({
     tenantId,
     clientId,
+    tokenCachePersistenceOptions,
     userPromptCallback: (info) => {
       console.error(`\nAuthentication Required:`)
       console.error(`Please visit: ${info.verificationUri}`)
@@ -99,6 +134,77 @@ export const isBrowserLaunchFailure = (error: unknown): boolean => {
   return BROWSER_LAUNCH_FAILURE_PATTERNS.some((pattern) => message.includes(pattern))
 }
 
+// An AuthenticationRecord only exists once a sign-in has completed, so it is captured
+// on the way past rather than up front, and written once — it does not change, and
+// rewriting it per token acquisition would be pointless disk traffic.
+//
+// The record is reached through the credential's internal msalClient. That is private
+// API, so it is probed defensively: if the shape ever changes, the record simply is not
+// saved and the next start signs in again, which is the current behaviour anyway. A
+// missing convenience must not become a failed authentication.
+const readActiveAccount = (browser: TokenCredential): AuthenticationRecordLike | undefined => {
+  const client = (browser as { msalClient?: { getActiveAccount?: () => unknown } }).msalClient
+  const account = client?.getActiveAccount?.()
+  const record = account as Partial<AuthenticationRecordLike> | undefined
+  return record?.homeAccountId && record.username && record.clientId ? (record as AuthenticationRecordLike) : undefined
+}
+
+// InteractiveBrowserCredential swallows the reason silent authentication failed: it
+// catches AuthenticationRequiredError and falls straight through to opening a browser,
+// logging nothing. So a stale record, a scope mismatch, or an expired refresh token all
+// present identically as "it asked me to sign in again", with no way to tell which.
+//
+// This probes silently first, with automatic authentication disabled so the failure
+// surfaces as an error instead of a browser window, and reports the reason before
+// handing off to the interactive flow. It changes no behaviour — the browser still
+// opens when it must — it only makes the cause visible.
+const reportSilentFailure = (credential: TokenCredential, probe: SilentProbe): TokenCredential => ({
+  getToken: async (scopes, options) => {
+    const outcome = await probe(scopes, options)
+    if (outcome) console.error(`[Auth] Cached credentials could not be reused (${outcome}). Signing in again.`)
+    return credential.getToken(scopes, options)
+  },
+})
+
+type SilentProbe = (
+  scopes: Parameters<TokenCredential["getToken"]>[0],
+  options: Parameters<TokenCredential["getToken"]>[1],
+) => Promise<string | undefined>
+
+// Returns a reason when the cache cannot serve the request, or undefined when it can.
+const silentProbe =
+  (browser: { getToken: TokenCredential["getToken"] }): SilentProbe =>
+  async (scopes, options) => {
+    try {
+      // Not on the public GetTokenOptions type, but honoured by msalClient — it is what
+      // turns a silent-auth failure into a thrown error rather than a browser window.
+      await browser.getToken(scopes, {
+        ...options,
+        disableAutomaticAuthentication: true,
+      } as Parameters<TokenCredential["getToken"]>[1])
+      return undefined
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
+const rememberAccount = (credential: TokenCredential, browser: TokenCredential): TokenCredential => {
+  const saved = Ref(false)
+  return {
+    getToken: async (scopes, options) => {
+      const token = await credential.getToken(scopes, options)
+      if (!saved.get()) {
+        const record = readActiveAccount(browser)
+        if (record) {
+          writeAuthenticationRecord(record)
+          saved.set(true)
+        }
+      }
+      return token
+    },
+  }
+}
+
 const createInteractiveCredential = (
   config: Extract<AuthConfig, { mode: "interactive" }>,
 ): Either<AuthError, TokenCredential> => {
@@ -108,19 +214,47 @@ const createInteractiveCredential = (
     return Left<AuthError, TokenCredential>({ type: "config", message: "Interactive mode requires MS365_CLIENT_ID" })
   }
 
+  // Whichever flow is used below, the resulting token survives a restart — the point
+  // of interactive mode being usable at all. Computed before the device-code branch so
+  // both paths persist.
+  const tokenCachePersistenceOptions = enableTokenCachePersistence()
+    ? { enabled: true, name: TOKEN_CACHE_NAME }
+    : undefined
+
   // Opt out of the browser entirely: headless hosts, SSH sessions, or a machine whose
   // default browser cannot be launched on demand.
   if (config.useDeviceCode) {
-    return tryCredential(() => createDeviceCodeCredential(tenantId, clientId), "device code")
+    return tryCredential(
+      () => createDeviceCodeCredential(tenantId, clientId, tokenCachePersistenceOptions),
+      "device code",
+    )
   }
+
+  // Without this the persisted cache is unreachable: the credential raises
+  // AuthenticationRequiredError before consulting it, because it does not know which
+  // account to look for.
+  const authenticationRecord = tokenCachePersistenceOptions ? readAuthenticationRecord() : undefined
 
   return tryCredential(() => {
     const browser = new InteractiveBrowserCredential({
       tenantId,
       clientId,
       redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
+      tokenCachePersistenceOptions,
+      authenticationRecord,
     }) as TokenCredential
-    return withDeviceCodeFallback(browser, tenantId, clientId)
+
+    const withFallback = withDeviceCodeFallback(browser, tenantId, clientId, (t, c) =>
+      createDeviceCodeCredential(t, c, tokenCachePersistenceOptions),
+    )
+    if (!tokenCachePersistenceOptions) return withFallback
+
+    // Only worth probing when a cache exists to be reused; otherwise the first sign-in
+    // would report a failure that is simply "nothing cached yet".
+    const probed = authenticationRecord
+      ? reportSilentFailure(withFallback, silentProbe(browser as { getToken: TokenCredential["getToken"] }))
+      : withFallback
+    return rememberAccount(probed, browser)
   }, "interactive")
 }
 
