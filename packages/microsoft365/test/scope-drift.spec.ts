@@ -84,4 +84,16 @@ describe("describeScopeDrift", () => {
     expect(message).toContain("app registration")
     expect(message).toContain("consent")
   })
+
+  // Granting the permission looks like it should be enough, and is not: `.default` keeps
+  // matching the cached token until it expires. Both steps have to be stated.
+  it("says the cached token must be cleared as well", () => {
+    const message = describeScopeDrift(["Mail.ReadWrite.Shared"])
+    expect(message).toContain("token cache")
+    expect(message).toContain("will not take effect")
+  })
+
+  it("names the cache directory when it is known", () => {
+    expect(describeScopeDrift(["Mail.ReadWrite.Shared"], "/tmp/token-cache")).toContain("/tmp/token-cache")
+  })
 })

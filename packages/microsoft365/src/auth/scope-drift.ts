@@ -63,13 +63,18 @@ export const resolveRequiredScopes = (env: NodeJS.ProcessEnv = process.env): Req
 }
 
 /**
- * Explains drift in terms of the action needed, since the fix is in Azure rather than in
- * this server: a scope cannot be granted by re-running anything locally.
+ * Explains drift in terms of the two things that actually resolve it.
+ *
+ * Both are needed and in this order, which is the part that is easy to get wrong: granting
+ * the permission in Azure changes nothing on its own, because the cached token was minted
+ * under the old consent and `.default` keeps matching it until it expires.
  */
-export const describeScopeDrift = (missing: ReadonlyArray<string>): string =>
+export const describeScopeDrift = (missing: ReadonlyArray<string>, cacheDirectory?: string): string =>
   `The signed-in token is missing ${missing.join(", ")}. ` +
-  "Add the permission to the app registration and grant admin consent, then sign in again. " +
-  "Until then, calls needing it will be refused by Graph."
+  `Add the permission to the app registration and grant admin consent, then delete the token cache${
+    cacheDirectory ? ` at ${cacheDirectory}` : ""
+  } and sign in again — the cached token predates the change, so granting the permission alone will not take effect. ` +
+  `Until then, calls needing it will be refused by Graph.`
 
 export const scopeDriftError = (missing: ReadonlyArray<string>): UserError => new UserError(describeScopeDrift(missing))
 

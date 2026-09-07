@@ -23,6 +23,7 @@ import {
   type AuthenticationRecordLike,
   fileCachePersistencePlugin,
   readAuthenticationRecord,
+  resolveCacheDirectory,
   writeAuthenticationRecord,
 } from "./token-cache"
 
@@ -198,14 +199,18 @@ const silentProbe =
 // A cached token survives a change to the app registration: the credential modes ask for
 // `.default`, so the requested scope string is identical before and after a permission is
 // added, and MSAL's cache serves the token minted under the old consent until it expires.
-// The result is a 403 from Graph on a call the registration now allows, fixed only by
-// someone knowing to delete the token cache by hand.
+// The result is a 403 from Graph on a call the registration now allows, with nothing
+// anywhere saying why.
 //
 // So the granted scopes are read back from the token and compared against what this
-// deployment needs. On a shortfall the token is re-acquired once with a claims challenge,
-// which is the documented way to make MSAL bypass its cache; if the new token still falls
-// short the permission genuinely is not granted in Azure, and that is reported rather than
-// retried — a missing consent cannot be fixed by asking again.
+// deployment needs, and a shortfall is reported with the two things that resolve it.
+//
+// Detection only, deliberately. Forcing a fresh token from here is not something this can
+// currently do safely: a claims challenge is validated by Azure and rejects anything it
+// does not recognise (`AADSTS1000004`), taking the whole sign-in down with it, and the
+// credential exposes no supported force-refresh. Clearing the cache file would also
+// discard the refresh token and force a full interactive sign-in. Telling the operator
+// precisely what is stale costs one manual step and cannot break authentication.
 export const revalidateScopes = (
   credential: TokenCredential,
   required: RequiredScopes,
@@ -223,25 +228,16 @@ export const revalidateScopes = (
       const missing = missingScopes(readScopes(token.token), required)
       if (missing.length === 0) return token
 
-      // Any non-empty claims value defeats the cache lookup; this one also says why in
-      // anything that logs the request.
-      const refreshed = await credential.getToken(scopes, {
-        ...options,
-        claims: JSON.stringify({ access_token: { xms_cc: { values: ["scope_drift"] } } }),
-      } as Parameters<TokenCredential["getToken"]>[1])
-
-      if (refreshed?.token && missingScopes(readScopes(refreshed.token), required).length === 0) {
-        console.error(`[Auth] Cached token predated a permission change; re-acquired with ${missing.join(", ")}.`)
-        return refreshed
-      }
-
       // Reported once: this runs on every token acquisition, and a line per Graph call
       // would bury the message it is trying to deliver.
       if (!reported.get()) {
-        console.error(`[Auth] ${describeScopeDrift(missing)}`)
+        console.error(`[Auth] ${describeScopeDrift(missing, resolveCacheDirectory())}`)
         reported.set(true)
       }
-      return refreshed?.token ? refreshed : token
+
+      // The token is still returned: everything that does not need the missing scope
+      // keeps working, and Graph refuses the rest with its own error.
+      return token
     },
   }
 }
