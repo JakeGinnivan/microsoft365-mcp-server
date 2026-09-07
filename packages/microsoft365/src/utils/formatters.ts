@@ -90,7 +90,7 @@ const ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"
 // Graph returns @odata.type on every attachment whether or not it is $select-ed, so this costs
 // nothing extra. An unrecognised type still gets the path — better to offer a read that might work
 // than to hide a file attachment behind a type name we have not seen before.
-export const formatAttachmentSummary = (messageId: string, att: GraphAttachment): string => {
+export const formatAttachmentSummary = (messageId: string, att: GraphAttachment, prefix: string = "/me"): string => {
   const inline = att.isInline ? " [inline]" : ""
   const type = att.contentType ?? "unknown type"
   const size = Option(att.size)
@@ -107,14 +107,20 @@ export const formatAttachmentSummary = (messageId: string, att: GraphAttachment)
     case ITEM_ATTACHMENT:
       return `${header}\n  embedded Outlook item — not readable with read_document`
     default:
-      return `${header}\n  read_document path: /me/messages/${messageId}/attachments/${att.id}/$value`
+      return `${header}\n  read_document path: ${prefix}/messages/${messageId}/attachments/${att.id}/$value`
   }
 }
 
-export const formatAttachmentList = (messageId: string, attachments: ReadonlyArray<GraphAttachment>): string =>
+// The prefix is the mailbox the message lives in. A path printed under /me for a message in
+// another mailbox would send read_document to the caller's own mailbox, where that ID is missing.
+export const formatAttachmentList = (
+  messageId: string,
+  attachments: ReadonlyArray<GraphAttachment>,
+  prefix: string = "/me",
+): string =>
   attachments.length === 0
     ? "No attachments found."
-    : `# Attachments\n\n${attachments.map((a) => formatAttachmentSummary(messageId, a)).join("\n")}`
+    : `# Attachments\n\n${attachments.map((a) => formatAttachmentSummary(messageId, a, prefix)).join("\n")}`
 
 export const formatMessageList = (
   messages: ReadonlyArray<GraphMessage>,
@@ -851,9 +857,11 @@ export const formatMessageScan = (
     readonly folder?: string
     readonly nextCursor?: string
     readonly searched?: boolean
+    /** Set when the scan addressed another mailbox; the cursor must be continued there. */
+    readonly mailbox?: string
   },
 ): string => {
-  const scope = meta.folder ? ` in ${meta.folder}` : ""
+  const scope = `${meta.folder ? ` in ${meta.folder}` : ""}${meta.mailbox ? ` (${meta.mailbox})` : ""}`
   const header =
     messages.length === 0
       ? "No messages found on this page."
@@ -866,7 +874,7 @@ export const formatMessageScan = (
         ].join("\n")
   const rows = messages.map((msg, i) => formatMessageScanRow(msg, refs[i]!)).join("\n")
   const more = meta.nextCursor
-    ? `\n\n**INCOMPLETE — more results exist.** Re-run scan_messages with cursor: "${meta.nextCursor}" alone to continue.`
+    ? `\n\n**INCOMPLETE — more results exist.** Re-run scan_messages with cursor: "${meta.nextCursor}"${meta.mailbox ? ` and mailbox: "${meta.mailbox}"` : " alone"} to continue.`
     : "\n\nEnd of results for this query (Graph returned no nextLink)."
   const coverage = meta.searched
     ? '\n\nSearch returns at most 1,000 results. Exhausting a search does not establish mailbox coverage; use filter (e.g. "hasAttachments eq true") and follow every cursor for a full scan.'

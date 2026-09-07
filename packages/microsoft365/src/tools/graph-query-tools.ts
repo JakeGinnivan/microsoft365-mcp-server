@@ -5,6 +5,7 @@ import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
 import type { GraphApiVersion } from "../types"
+import { safeDecode } from "../utils/safe-decode"
 import { requireDraftEnabled } from "./tool-registry"
 
 const requireClient = () => {
@@ -25,14 +26,6 @@ const isGraphApiVersion = (value: string): value is GraphApiVersion =>
 // (/messages/{id}/send) stays allowed: it is exactly what send_draft does. Teams replies use the
 // plural "replies" and are not matched.
 const SEND_ACTIONS: ReadonlySet<string> = new Set(["sendmail", "reply", "replyall", "forward"])
-
-const safeDecode = (value: string): string => {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
-  }
-}
 
 // Match on the path fetch will actually send, not the string the caller typed. The WHATWG URL
 // parser drops fragments, strips tabs, newlines and trailing spaces, turns "\" into "/", and
