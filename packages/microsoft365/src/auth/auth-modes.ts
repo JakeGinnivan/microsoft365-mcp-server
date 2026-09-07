@@ -11,6 +11,13 @@ import { type Either, Left, Right } from "functype/either"
 import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
+import {
+  describeScopeDrift,
+  missingScopes,
+  parseGrantedScopes,
+  type RequiredScopes,
+  resolveRequiredScopes,
+} from "./scope-drift"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
 import {
   type AuthenticationRecordLike,
@@ -188,6 +195,57 @@ const silentProbe =
     }
   }
 
+// A cached token survives a change to the app registration: the credential modes ask for
+// `.default`, so the requested scope string is identical before and after a permission is
+// added, and MSAL's cache serves the token minted under the old consent until it expires.
+// The result is a 403 from Graph on a call the registration now allows, fixed only by
+// someone knowing to delete the token cache by hand.
+//
+// So the granted scopes are read back from the token and compared against what this
+// deployment needs. On a shortfall the token is re-acquired once with a claims challenge,
+// which is the documented way to make MSAL bypass its cache; if the new token still falls
+// short the permission genuinely is not granted in Azure, and that is reported rather than
+// retried — a missing consent cannot be fixed by asking again.
+export const revalidateScopes = (
+  credential: TokenCredential,
+  required: RequiredScopes,
+  readScopes: (token: string) => ReadonlyArray<string>,
+): TokenCredential => {
+  if (required.length === 0) return credential
+
+  const reported = Ref(false)
+
+  return {
+    getToken: async (scopes, options) => {
+      const token = await credential.getToken(scopes, options)
+      if (!token?.token) return token
+
+      const missing = missingScopes(readScopes(token.token), required)
+      if (missing.length === 0) return token
+
+      // Any non-empty claims value defeats the cache lookup; this one also says why in
+      // anything that logs the request.
+      const refreshed = await credential.getToken(scopes, {
+        ...options,
+        claims: JSON.stringify({ access_token: { xms_cc: { values: ["scope_drift"] } } }),
+      } as Parameters<TokenCredential["getToken"]>[1])
+
+      if (refreshed?.token && missingScopes(readScopes(refreshed.token), required).length === 0) {
+        console.error(`[Auth] Cached token predated a permission change; re-acquired with ${missing.join(", ")}.`)
+        return refreshed
+      }
+
+      // Reported once: this runs on every token acquisition, and a line per Graph call
+      // would bury the message it is trying to deliver.
+      if (!reported.get()) {
+        console.error(`[Auth] ${describeScopeDrift(missing)}`)
+        reported.set(true)
+      }
+      return refreshed?.token ? refreshed : token
+    },
+  }
+}
+
 const rememberAccount = (credential: TokenCredential, browser: TokenCredential): TokenCredential => {
   const saved = Ref(false)
   return {
@@ -254,7 +312,8 @@ const createInteractiveCredential = (
     const probed = authenticationRecord
       ? reportSilentFailure(withFallback, silentProbe(browser as { getToken: TokenCredential["getToken"] }))
       : withFallback
-    return rememberAccount(probed, browser)
+    const revalidated = revalidateScopes(probed, resolveRequiredScopes(), parseGrantedScopes)
+    return rememberAccount(revalidated, browser)
   }, "interactive")
 }
 
@@ -270,10 +329,14 @@ const createCertificateCredential = (
 
   return tryCredential(
     () =>
-      new ClientCertificateCredential(config.tenantId, config.clientId, {
-        certificatePath: config.certPath,
-        certificatePassword: config.certPassword,
-      }) as TokenCredential,
+      revalidateScopes(
+        new ClientCertificateCredential(config.tenantId, config.clientId, {
+          certificatePath: config.certPath,
+          certificatePassword: config.certPassword,
+        }) as TokenCredential,
+        resolveRequiredScopes(),
+        parseGrantedScopes,
+      ),
     "certificate",
   )
 }
@@ -289,7 +352,12 @@ const createClientSecretCredential = (
   }
 
   return tryCredential(
-    () => new ClientSecretCredential(config.tenantId, config.clientId, config.clientSecret) as TokenCredential,
+    () =>
+      revalidateScopes(
+        new ClientSecretCredential(config.tenantId, config.clientId, config.clientSecret) as TokenCredential,
+        resolveRequiredScopes(),
+        parseGrantedScopes,
+      ),
     "client-secret",
   )
 }
