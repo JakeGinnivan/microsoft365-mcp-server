@@ -25,16 +25,18 @@ export type BatchMoveRequest = {
   readonly body: { readonly destinationId: string }
 }
 
-// Sub-request ids are the message ids themselves: the response carries only the id
-// back, and mapping through positions would silently misattribute a failure if Graph
-// ever reordered responses (it does not promise not to).
+// Sub-request ids are positions ("0".."19"), not the message ids. Graph compares
+// batch ids case-insensitively, and message ids are base64 — two in the same batch
+// that differ only by letter case were rejected with "Request Id ... has to be unique
+// in a batch" (11% of a 14,000-message run). The response is matched back by that
+// positional id, never by array order, so reordering by Graph is still safe.
 export const buildMoveBatch = (
   messageIds: ReadonlyArray<string>,
   prefix: string,
   destinationId: string,
 ): ReadonlyArray<BatchMoveRequest> =>
-  messageIds.map((id) => ({
-    id,
+  messageIds.map((id, index) => ({
+    id: String(index),
     method: "POST",
     url: `${prefix}/messages/${id}/move`,
     headers: { "Content-Type": "application/json" },
@@ -61,8 +63,8 @@ export const parseBatchResponses = (
   response: GraphBatchResponse,
 ): ReadonlyArray<MoveOutcome> => {
   const byId = new Map(response.responses.map((r) => [r.id, r]))
-  return requested.map((id) => {
-    const r = byId.get(id)
+  return requested.map((id, index) => {
+    const r = byId.get(String(index))
     // A sub-request Graph did not answer at all is treated as failed, not moved:
     // "unknown" must never be reported as success.
     if (r === undefined) return { id, status: 0, error: "No response for this message in the batch" }

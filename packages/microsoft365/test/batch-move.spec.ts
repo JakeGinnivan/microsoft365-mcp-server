@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest"
 import { BATCH_SIZE, buildMoveBatch, chunk, parseBatchResponses, runMoveBatches } from "../src/mail/batch-move"
 import type { GraphBatchResponse } from "../src/types"
 
+// Responses carry positional ids, matching buildMoveBatch.
 const ok = (ids: ReadonlyArray<string>): GraphBatchResponse => ({
-  responses: ids.map((id) => ({ id, status: 201 })),
+  responses: ids.map((_, index) => ({ id: String(index), status: 201 })),
 })
 
 describe("chunk", () => {
@@ -16,10 +17,11 @@ describe("chunk", () => {
 })
 
 describe("buildMoveBatch", () => {
-  it("addresses each move under the mailbox prefix and keys it by message id", () => {
+  // Graph compares batch ids case-insensitively; base64 message ids collided.
+  it("addresses each move under the mailbox prefix and keys it by position, not message id", () => {
     const [req] = buildMoveBatch(["m1"], "/users/bel%40example.com", "deleteditems")
     expect(req).toEqual({
-      id: "m1",
+      id: "0",
       method: "POST",
       url: "/users/bel%40example.com/messages/m1/move",
       headers: { "Content-Type": "application/json" },
@@ -32,8 +34,8 @@ describe("parseBatchResponses", () => {
   it("reads success and failure per sub-request", () => {
     const outcomes = parseBatchResponses(["a", "b"], {
       responses: [
-        { id: "a", status: 201 },
-        { id: "b", status: 404, body: { error: { code: "ErrorItemNotFound", message: "gone" } } },
+        { id: "1", status: 404, body: { error: { code: "ErrorItemNotFound", message: "gone" } } },
+        { id: "0", status: 201 },
       ],
     })
     expect(outcomes).toEqual([
@@ -50,7 +52,7 @@ describe("parseBatchResponses", () => {
 
   it("reads Retry-After on a throttled sub-request", () => {
     const [outcome] = parseBatchResponses(["a"], {
-      responses: [{ id: "a", status: 429, headers: { "retry-after": "3" }, body: { error: { code: "TooMany" } } }],
+      responses: [{ id: "0", status: 429, headers: { "retry-after": "3" }, body: { error: { code: "TooMany" } } }],
     })
     expect(outcome).toMatchObject({ status: 429, retryAfterMs: 3000 })
   })
@@ -74,8 +76,8 @@ describe("runMoveBatches", () => {
       .mockResolvedValueOnce(
         Right({
           responses: [
-            { id: "a", status: 201 },
-            { id: "b", status: 429, headers: { "Retry-After": "1" } },
+            { id: "0", status: 201 },
+            { id: "1", status: 429, headers: { "Retry-After": "1" } },
           ],
         }),
       )
@@ -83,13 +85,13 @@ describe("runMoveBatches", () => {
     const wait = vi.fn(async () => undefined)
     const result = await runMoveBatches(["a", "b"], "/me", "archive", send, wait)
     expect(wait).toHaveBeenCalledWith(1000)
-    expect(send.mock.calls[1]![0].map((r: { id: string }) => r.id)).toEqual(["b"])
+    expect(send.mock.calls[1]![0].map((r: { url: string }) => r.url)).toEqual(["/me/messages/b/move"])
     expect(result.moved).toEqual(["a", "b"])
     expect(result.failed).toEqual([])
   })
 
   it("gives up on a persistently throttled id and reports it", async () => {
-    const throttled = Right({ responses: [{ id: "a", status: 429 }] })
+    const throttled = Right({ responses: [{ id: "0", status: 429 }] })
     const send = vi.fn().mockResolvedValue(throttled)
     const wait = vi.fn(async () => undefined)
     const result = await runMoveBatches(["a"], "/me", "archive", send, wait)
@@ -101,7 +103,7 @@ describe("runMoveBatches", () => {
 
   it("does not retry a non-transient failure", async () => {
     const send = vi.fn().mockResolvedValue(
-      Right({ responses: [{ id: "a", status: 404, body: { error: { code: "ErrorItemNotFound" } } }] }),
+      Right({ responses: [{ id: "0", status: 404, body: { error: { code: "ErrorItemNotFound" } } }] }),
     )
     const result = await runMoveBatches(["a"], "/me", "archive", send)
     expect(send).toHaveBeenCalledTimes(1)
