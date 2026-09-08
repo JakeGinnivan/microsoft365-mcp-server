@@ -140,15 +140,22 @@ export const runMoveBatches = async (
   destinationId: string,
   send: BatchSender,
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  onProgress?: (done: number, total: number, failed: number) => void,
-): Promise<MoveRunResult> =>
-  chunk(messageIds, BATCH_SIZE).reduce<Promise<MoveRunResult>>(
-    async (acc, ids) => {
+  onProgress?: (done: number, total: number, failed: number, chunkResult: MoveRunResult) => void,
+  // Optional pause between batches. Exchange allows roughly 10,000 requests per mailbox
+  // per ten minutes; a pause of ~750 ms keeps 20-per-batch under that so a long run
+  // never trips the throttle instead of relying on Retry-After to recover from it.
+  paceMs: number = 0,
+): Promise<MoveRunResult> => {
+  const chunks = chunk(messageIds, BATCH_SIZE)
+  return chunks.reduce<Promise<MoveRunResult>>(
+    async (acc, ids, index) => {
       const soFar = await acc
+      if (index > 0 && paceMs > 0) await wait(paceMs)
       const result = await runChunk(ids, prefix, destinationId, send, wait)
       const next = { moved: [...soFar.moved, ...result.moved], failed: [...soFar.failed, ...result.failed] }
-      onProgress?.(next.moved.length + next.failed.length, messageIds.length, next.failed.length)
+      onProgress?.(next.moved.length + next.failed.length, messageIds.length, next.failed.length, result)
       return next
     },
     Promise.resolve({ moved: [], failed: [] }),
   )
+}

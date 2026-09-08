@@ -117,3 +117,24 @@ describe("runMoveBatches", () => {
     expect(result.failed.map((f) => f.error)).toEqual(["offline", "offline"])
   })
 })
+
+describe("runMoveBatches pacing and progress", () => {
+  it("pauses between batches by paceMs but not before the first", async () => {
+    const ids = Array.from({ length: 45 }, (_, i) => `m${i}`)
+    const send = vi.fn(async (requests: ReadonlyArray<{ id: string }>) => Right(ok(requests.map((r) => r.id))))
+    const wait = vi.fn(async () => undefined)
+    await runMoveBatches(ids, "/me", "archive", send as never, wait, undefined, 750)
+    expect(wait.mock.calls).toEqual([[750], [750]])
+  })
+
+  it("reports cumulative progress and the chunk's own result after every batch", async () => {
+    const ids = Array.from({ length: 25 }, (_, i) => `m${i}`)
+    const send = vi.fn(async (requests: ReadonlyArray<{ id: string }>) => Right(ok(requests.map((r) => r.id))))
+    const progress = vi.fn()
+    await runMoveBatches(ids, "/me", "archive", send as never, undefined, progress)
+    expect(progress).toHaveBeenCalledTimes(2)
+    expect(progress.mock.calls[0]!.slice(0, 3)).toEqual([20, 25, 0])
+    expect(progress.mock.calls[1]!.slice(0, 3)).toEqual([25, 25, 0])
+    expect(progress.mock.calls[1]![3].moved).toHaveLength(5)
+  })
+})

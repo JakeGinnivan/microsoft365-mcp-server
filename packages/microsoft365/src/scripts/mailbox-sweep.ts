@@ -7,7 +7,7 @@
 // rather than an agent driving tool calls: the rules are reviewable before anything
 // moves, the rehearsal report is the approval artefact, and a re-run is deterministic.
 //
-//   node dist/mailbox-sweep.js --rules rules.json [--out ./sweep-out] [--apply]
+//   node dist/mailbox-sweep.js --rules rules.json [--out ./sweep-out] [--apply] [--pace [ms]]
 //
 // Auth is the server's own (same MS365_* environment, same token cache), so a cached
 // sign-in is reused and no separate login flow exists.
@@ -21,7 +21,7 @@
 //               never have one) AND the subject has no record word.
 //   4. keep     everything else (reported as "unmatched" so the rules can be tuned).
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { getAccessToken, initializeAuth } from "../auth"
@@ -140,8 +140,17 @@ const main = async (): Promise<void> => {
   const rulesPath = arg("--rules") ?? fail("--rules <file> is required")
   const outDir = arg("--out") ?? "./sweep-out"
   const apply = flag("--apply")
+  // --pace with no number means the default; absent means no pacing.
+  const paceArg = arg("--pace")
+  const paceMs = !flag("--pace") ? 0 : paceArg !== undefined && /^\d+$/.test(paceArg) ? Number(paceArg) : 750
   const rules = JSON.parse(readFileSync(rulesPath, "utf-8")) as Rules
   mkdirSync(outDir, { recursive: true })
+
+  // A rules file without a mailbox would run against the signed-in user's own mail.
+  // That is never an accident worth allowing silently.
+  if (!rules.mailbox && !flag("--own-mailbox"))
+    fail("rules.mailbox is not set; pass --own-mailbox to sweep your own mailbox")
+  if (!rules.folder || !rules.destination) fail("rules.folder and rules.destination are required")
 
   const auth = await initializeAuth(authConfig())
   if (auth.isLeft()) fail(`auth failed: ${(auth.value as { message: string }).message}`)
@@ -274,28 +283,32 @@ const main = async (): Promise<void> => {
     return
   }
 
-  console.error(`[sweep] moving ${toDelete.length} messages to ${rules.destination} …`)
+  console.error(
+    `[sweep] moving ${toDelete.length} messages to ${rules.destination}${paceMs ? ` (pace ${paceMs} ms)` : ""} …`,
+  )
+  const byId = new Map(toDelete.map(({ m }) => [m.id, m]))
+  // moved.csv is appended after every batch, not written at the end: if the run dies
+  // part-way, the record of what already moved must survive.
+  const movedPath = join(outDir, "moved.csv")
+  writeFileSync(movedPath, `${csv([["received", "address", "subject", "id"]])}\n`)
   const result = await runMoveBatches(
     toDelete.map(({ m }) => m.id),
     prefix,
     rules.destination,
     (requests) => client.request<GraphBatchResponse>("POST", "/$batch", { body: { requests } }),
     undefined,
-    (done, total, failed) => {
+    (done, total, failed, chunkResult) => {
+      if (chunkResult.moved.length > 0) {
+        const lines = chunkResult.moved.map((id) => {
+          const m = byId.get(id)
+          return [m?.receivedDateTime ?? "", m ? addressOf(m) : "", m?.subject ?? "", id]
+        })
+        appendFileSync(movedPath, `${csv(lines)}\n`)
+      }
       // Every 200 messages and at the end: enough to see it is alive without a wall of lines.
       if (done % 200 === 0 || done === total) console.error(`[sweep] ${done}/${total} processed, ${failed} failed`)
     },
-  )
-  const byId = new Map(toDelete.map(({ m }) => [m.id, m]))
-  writeFileSync(
-    join(outDir, "moved.csv"),
-    csv([
-      ["received", "address", "subject", "id"],
-      ...result.moved.map((id) => {
-        const m = byId.get(id)
-        return [m?.receivedDateTime ?? "", m ? addressOf(m) : "", m?.subject ?? "", id]
-      }),
-    ]),
+    paceMs,
   )
   console.log(`moved: ${result.moved.length}   failed: ${result.failed.length}`)
   result.failed.slice(0, 20).forEach((f) => console.log(`  FAILED ${byId.get(f.id)?.subject ?? f.id}: ${f.error}`))
