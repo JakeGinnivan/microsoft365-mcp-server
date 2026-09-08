@@ -12,6 +12,7 @@ import type {
   GraphApiError,
   GraphApiVersion,
   GraphAttachment,
+  GraphBatchResponse,
   GraphBucket,
   GraphChannel,
   GraphChannelMessage,
@@ -111,6 +112,11 @@ const createGraphClient = (auth: AuthStrategy) => {
 
   const moveMessage = (id: string, destinationId: string, prefix: string = "/me") =>
     request<GraphMessage>("POST", `${prefix}/messages/${id}/move`, { body: { destinationId } })
+
+  // JSON batching: up to 20 sub-requests per round-trip, each with its own status. The
+  // only way to move thousands of messages without thousands of round-trips.
+  const batchRequest = (requests: ReadonlyArray<Record<string, unknown>>) =>
+    request<GraphBatchResponse>("POST", "/$batch", { body: { requests } })
 
   // $select omits contentBytes deliberately: fileAttachment includes the full base64 payload
   // by default, which would drag megabytes of binary through the model for a listing.
@@ -568,6 +574,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     getMessage,
     listMailFolders,
     moveMessage,
+    batchRequest,
 
     listAttachments,
     sendMessage,
