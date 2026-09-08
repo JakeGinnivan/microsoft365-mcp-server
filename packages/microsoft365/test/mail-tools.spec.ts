@@ -710,7 +710,7 @@ describe("moveMessagesMatching", () => {
   it("lists failures by subject", async () => {
     mockClient.listFolderMessagesAll.mockResolvedValue(Right([sweepMessage("1", "a@x.com", "2026-01-01")]))
     mockClient.batchRequest.mockResolvedValue(
-      Right({ responses: [{ id: "1", status: 404, body: { error: { code: "ErrorItemNotFound", message: "gone" } } }] }),
+      Right({ responses: [{ id: "0", status: 404, body: { error: { code: "ErrorItemNotFound", message: "gone" } } }] }),
     )
     const result = await moveMessagesMatching({
       folder: "inbox",
