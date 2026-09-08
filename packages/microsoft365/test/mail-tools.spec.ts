@@ -21,11 +21,13 @@ import {
   listAttachments as listAttachmentsTool,
   listMailFolders,
   moveMessage,
+  moveMessagesMatching,
   sendDraft,
   sendForward,
   sendMessage,
   sendReply,
   sendReplyAll,
+  summarizeSenders,
 } from "../src/tools/mail-tools"
 
 const mockClient = {
@@ -45,6 +47,8 @@ const mockClient = {
   listMessages: vi.fn(),
   moveMessage: vi.fn(),
   requestPaginated: vi.fn(),
+  listFolderMessagesAll: vi.fn(),
+  batchRequest: vi.fn(),
 }
 
 beforeEach(() => {
@@ -596,5 +600,131 @@ describe("scan refs work across message tools", () => {
     await listAttachments({ message_id: graphId })
 
     expect(mockClient.listAttachments).toHaveBeenCalledWith(graphId, "/me")
+  })
+})
+
+const sweepMessage = (id: string, address: string, received: string): GraphMessage => ({
+  id,
+  subject: `Subject ${id}`,
+  from: { emailAddress: { name: "Sender", address } },
+  receivedDateTime: `${received}T00:00:00Z`,
+  isRead: false,
+})
+
+describe("summarizeSenders", () => {
+  it("reads the whole folder without an orderby and returns counts per sender", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [] }))
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([
+        sweepMessage("1", "news@x.com", "2026-01-01"),
+        sweepMessage("2", "news@x.com", "2026-01-02"),
+        sweepMessage("3", "bob@y.com", "2026-01-03"),
+      ]),
+    )
+    const result = await summarizeSenders({ mailbox: undefined })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toContain("3 messages in inbox")
+    expect(result.value).toContain("2|2|2026-01-01|2026-01-02|news@x.com")
+    const [, odata] = mockClient.listFolderMessagesAll.mock.calls[0]!
+    expect(odata.$orderby).toBeUndefined()
+    expect(odata.$top).toBe(999)
+  })
+})
+
+describe("moveMessagesMatching", () => {
+  beforeEach(() => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [] }))
+  })
+
+  it("refuses a sweep with neither senders nor filter", async () => {
+    const result = await moveMessagesMatching({ folder: "inbox", destination: "deleteditems" })
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.listFolderMessagesAll).not.toHaveBeenCalled()
+  })
+
+  it("builds an exact-address filter from senders, escaped for OData", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(Right([]))
+    await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["News@X.com", "o'brien@y.com"],
+      filter: "receivedDateTime lt 2025-01-01T00:00:00Z",
+    })
+    const [, odata] = mockClient.listFolderMessagesAll.mock.calls[0]!
+    expect(odata.$filter).toBe(
+      "(from/emailAddress/address eq 'news@x.com' or from/emailAddress/address eq 'o''brien@y.com') and (receivedDateTime lt 2025-01-01T00:00:00Z)",
+    )
+  })
+
+  // The default must be the safe path: a caller who forgets dry_run gets a report,
+  // not a moved folder.
+  it("is a dry run by default and moves nothing", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([sweepMessage("1", "news@x.com", "2026-01-01"), sweepMessage("2", "news@x.com", "2026-01-05")]),
+    )
+    const result = await moveMessagesMatching({ folder: "inbox", destination: "deleteditems", senders: ["news@x.com"] })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toContain("2 messages in inbox match")
+    expect(result.value).toContain("Oldest 2026-01-01, newest 2026-01-05")
+    expect(result.value).toContain("Nothing was moved")
+    expect(mockClient.batchRequest).not.toHaveBeenCalled()
+  })
+
+  it("refuses a live run above the limit instead of moving part of it", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([sweepMessage("1", "a@x.com", "2026-01-01"), sweepMessage("2", "a@x.com", "2026-01-02")]),
+    )
+    const result = await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["a@x.com"],
+      dry_run: false,
+      limit: 1,
+    })
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain("2 messages match, above the limit of 1")
+    expect(mockClient.batchRequest).not.toHaveBeenCalled()
+  })
+
+  it("moves through $batch and reports the count", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([sweepMessage("1", "a@x.com", "2026-01-01"), sweepMessage("2", "a@x.com", "2026-01-02")]),
+    )
+    mockClient.batchRequest.mockImplementation(async (requests: ReadonlyArray<{ id: string }>) =>
+      Right({ responses: requests.map((r) => ({ id: r.id, status: 201 })) }),
+    )
+    const result = await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["a@x.com"],
+      dry_run: false,
+      mailbox: undefined,
+    })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toBe("Moved 2/2 message(s) from inbox to deleteditems.")
+    const [requests] = mockClient.batchRequest.mock.calls[0]!
+    expect(requests[0]).toMatchObject({ url: "/me/messages/1/move", body: { destinationId: "deleteditems" } })
+  })
+
+  it("lists failures by subject", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(Right([sweepMessage("1", "a@x.com", "2026-01-01")]))
+    mockClient.batchRequest.mockResolvedValue(
+      Right({ responses: [{ id: "1", status: 404, body: { error: { code: "ErrorItemNotFound", message: "gone" } } }] }),
+    )
+    const result = await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["a@x.com"],
+      dry_run: false,
+    })
+    expect(result.value).toContain("Moved 0/1")
+    expect(result.value).toContain('FAILED "Subject 1": ErrorItemNotFound gone')
+  })
+
+  it("refuses when the destination is the folder being swept", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Promos" }] }))
+    mockClient.listFolderMessagesAll.mockResolvedValue(Right([]))
+    const result = await moveMessagesMatching({ folder: "Promos", destination: "Promos", senders: ["a@x.com"] })
+    expect(result.isLeft()).toBe(true)
   })
 })

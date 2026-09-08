@@ -3,8 +3,15 @@ import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
+import { runMoveBatches } from "../mail/batch-move"
 import { type MailboxScope, resolveMailboxScope } from "../mail/mailbox"
-import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
+import {
+  formatSenderSummary,
+  senderAddress,
+  type SenderGroupBy,
+  summarizeSenders as aggregateSenders,
+} from "../mail/sender-summary"
+import type { GraphAttachment, GraphBatchResponse, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
 import {
   formatAttachmentList,
   formatMailFolderList,
@@ -552,4 +559,195 @@ export const scanMessages = async (params: {
         searched: params.search !== undefined,
       })
     })
+}
+
+// --- Folder sweeps -------------------------------------------------------------
+//
+// Cleaning a large inbox is two questions: "who sends the bulk of this?" and "move
+// everything from them". Both need every matching header, not a page of them, and the
+// second needs to act on thousands of ids without dragging them through the caller.
+// So both fetch server-side, without $orderby (Graph refuses a from/emailAddress
+// filter combined with a receivedDateTime sort), and only summaries cross the wire.
+
+const SWEEP_FIELDS = ["id", "subject", "from", "receivedDateTime", "isRead"] as const
+const SWEEP_PAGE = 999
+
+// A single quote is the only character OData needs escaped inside a string literal.
+const odataString = (value: string): string => `'${value.replace(/'/g, "''")}'`
+
+const senderFilter = (senders: ReadonlyArray<string>): string =>
+  senders.map((address) => `from/emailAddress/address eq ${odataString(address.trim().toLowerCase())}`).join(" or ")
+
+const fetchFolderMessages = async (
+  client: NonNullable<ReturnType<typeof requireClient>>,
+  scope: MailboxScope,
+  folder: string,
+  filter: string | undefined,
+): Promise<Either<UserError, { readonly folderId: string; readonly messages: ReadonlyArray<GraphMessage> }>> => {
+  const resolvedFolder = await resolveDestination(client, folder, scope)
+  if (resolvedFolder.isLeft()) return resolvedFolder as Either<UserError, never>
+  const folderId = resolvedFolder.orThrow()
+
+  const result = await client.listFolderMessagesAll(
+    folderId,
+    { $select: [...SWEEP_FIELDS], $filter: filter, $top: SWEEP_PAGE },
+    scope.prefix,
+  )
+  return result
+    .mapLeft((error) => new UserError(`Failed to read ${folder}: ${error.message}`))
+    .map((messages) => ({ folderId, messages }))
+}
+
+export const summarizeSenders = async (params: {
+  folder?: string
+  filter?: string
+  group_by?: SenderGroupBy
+  top?: number
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
+
+  const folder = params.folder ?? "inbox"
+  const groupBy = params.group_by ?? "address"
+  const top = Math.min(Math.max(params.top ?? 100, 1), 1000)
+
+  const fetched = await fetchFolderMessages(client, scope, folder, params.filter)
+  return fetched.map(({ messages }) =>
+    formatSenderSummary(aggregateSenders(messages, groupBy), {
+      folder,
+      total: messages.length,
+      unread: messages.filter((m) => m.isRead === false).length,
+      groupBy,
+      top,
+      filter: params.filter,
+    }),
+  )
+}
+
+const DEFAULT_SWEEP_LIMIT = 1000
+const MAX_SWEEP_LIMIT = 20000
+const MAX_SENDERS_PER_SWEEP = 20
+
+const formatSweepPreview = (
+  messages: ReadonlyArray<GraphMessage>,
+  meta: { readonly folder: string; readonly filter: string; readonly destination: string },
+): string => {
+  if (messages.length === 0) return `No messages in ${meta.folder} match: ${meta.filter}`
+
+  const days = messages.map((m) => m.receivedDateTime?.slice(0, 10) ?? "").filter((d) => d !== "")
+  const oldest = days.reduce((a, b) => (a < b ? a : b))
+  const newest = days.reduce((a, b) => (a > b ? a : b))
+  const unread = messages.filter((m) => m.isRead === false).length
+
+  const senders = aggregateSenders(messages, "address").slice(0, 10)
+  const senderLines = senders.map((s) => `- ${s.count} from ${s.key}${s.name ? ` (${s.name})` : ""}`)
+
+  const newestTen = [...messages]
+    .sort((a, b) => (b.receivedDateTime ?? "").localeCompare(a.receivedDateTime ?? ""))
+    .slice(0, 10)
+    .map(
+      (m) =>
+        `- ${m.receivedDateTime?.slice(0, 10) ?? ""} | ${senderAddress(m)} | ${(m.subject ?? "(No Subject)").replace(/[\r\n]+/g, " ").slice(0, 100)}`,
+    )
+
+  return [
+    `# Sweep preview — ${messages.length} messages in ${meta.folder} match`,
+    `filter: ${meta.filter}`,
+    `Oldest ${oldest}, newest ${newest}, ${unread} unread.`,
+    "",
+    "By sender:",
+    ...senderLines,
+    "",
+    "Newest 10:",
+    ...newestTen,
+    "",
+    `**Nothing was moved.** Re-run with dry_run: false to move all ${messages.length} to ${meta.destination}.`,
+  ].join("\n")
+}
+
+export const moveMessagesMatching = async (params: {
+  folder: string
+  destination: string
+  filter?: string
+  senders?: ReadonlyArray<string>
+  dry_run?: boolean
+  limit?: number
+  mailbox?: string
+}): Promise<Either<UserError, string>> => {
+  const resolvedScope = withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
+
+  const senders = (params.senders ?? []).map((s) => s.trim()).filter((s) => s.length > 0)
+  const filter = (params.filter ?? "").trim()
+  if (senders.length === 0 && filter.length === 0) {
+    return Left(
+      new UserError(
+        "Pass senders (a list of addresses) and/or filter (an OData expression). Sweeping a whole folder unconditionally is refused.",
+      ),
+    )
+  }
+  if (senders.length > MAX_SENDERS_PER_SWEEP) {
+    return Left(new UserError(`At most ${MAX_SENDERS_PER_SWEEP} senders per call; split the list.`))
+  }
+
+  // Both given: the sender clause narrows the filter (and), never widens it.
+  const combined =
+    senders.length > 0 && filter.length > 0
+      ? `(${senderFilter(senders)}) and (${filter})`
+      : senders.length > 0
+        ? senderFilter(senders)
+        : filter
+
+  const destination = await resolveDestination(client, params.destination, scope)
+  if (destination.isLeft()) return destination
+  const destinationId = destination.orThrow()
+
+  const fetched = await fetchFolderMessages(client, scope, params.folder, combined)
+  if (fetched.isLeft()) return Left(fetched.value as UserError)
+  const { folderId, messages } = fetched.orThrow()
+
+  if (folderId === destinationId) {
+    return Left(new UserError(`Destination "${params.destination}" is the folder being swept.`))
+  }
+
+  const dryRun = params.dry_run ?? true
+  const meta = { folder: params.folder, filter: combined, destination: params.destination }
+  if (dryRun) return Right(formatSweepPreview(messages, meta))
+
+  if (messages.length === 0) return Right(`No messages in ${params.folder} match: ${combined}`)
+
+  const limit = Math.min(params.limit ?? DEFAULT_SWEEP_LIMIT, MAX_SWEEP_LIMIT)
+  // Refusing, rather than moving the first N, keeps a mis-scoped filter from doing
+  // partial damage: the caller sees the real count and decides.
+  if (messages.length > limit) {
+    return Left(
+      new UserError(
+        `${messages.length} messages match, above the limit of ${limit}. Narrow the filter, or pass limit: ${messages.length} (max ${MAX_SWEEP_LIMIT}) if that count is intended.`,
+      ),
+    )
+  }
+
+  const outcome = await runMoveBatches(
+    messages.map((m) => m.id),
+    scope.prefix,
+    destinationId,
+    (requests) =>
+      client.batchRequest(requests as ReadonlyArray<Record<string, unknown>>) as Promise<
+        Either<never, GraphBatchResponse>
+      >,
+  )
+
+  const summary = `Moved ${outcome.moved.length}/${messages.length} message(s) from ${params.folder} to ${params.destination}.`
+  if (outcome.failed.length === 0) return Right(summary)
+
+  // Failures are listed by subject rather than id: an id is useless to a caller who
+  // wants to know what did not move, and the listing is capped to stay legible.
+  const subjectById = new Map(messages.map((m) => [m.id, m.subject ?? "(No Subject)"]))
+  const shown = outcome.failed.slice(0, 20)
+  const failureLines = shown.map((f) => `- FAILED "${subjectById.get(f.id) ?? f.id}": ${f.error}`)
+  const overflow = outcome.failed.length > shown.length ? `\n... and ${outcome.failed.length - shown.length} more` : ""
+  return Right(`${summary}\n\n${outcome.failed.length} failed:\n${failureLines.join("\n")}${overflow}`)
 }

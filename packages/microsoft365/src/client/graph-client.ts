@@ -12,6 +12,7 @@ import type {
   GraphApiError,
   GraphApiVersion,
   GraphAttachment,
+  GraphBatchResponse,
   GraphBucket,
   GraphChannel,
   GraphChannelMessage,
@@ -70,6 +71,18 @@ const createGraphClient = (auth: AuthStrategy) => {
 
   const moveMessage = (id: string, destinationId: string, prefix: string = "/me") =>
     request<GraphMessage>("POST", `${prefix}/messages/${id}/move`, { body: { destinationId } })
+
+  // Every message in one folder, across all pages, for a sweep or a roll-up. Deliberately
+  // unordered: Graph rejects a $filter on from/emailAddress combined with $orderby
+  // receivedDateTime ("The restriction or sort order is too complex"), and neither use
+  // needs an order — they need the whole set. Capped by the paginator at 50 pages.
+  const listFolderMessagesAll = (folderId: string, odataParams: ODataParams, prefix: string = "/me") =>
+    requestPaginated<GraphMessage>(`${prefix}/mailFolders/${folderId}/messages`, { odataParams })
+
+  // JSON batching: up to 20 sub-requests per round-trip, each with its own status. The
+  // only way to move thousands of messages without thousands of round-trips.
+  const batchRequest = (requests: ReadonlyArray<Record<string, unknown>>) =>
+    request<GraphBatchResponse>("POST", "/$batch", { body: { requests } })
 
   // No $select here, deliberately — see the two constraints it has to satisfy at once.
   //
@@ -488,6 +501,8 @@ const createGraphClient = (auth: AuthStrategy) => {
     // Mail
     listMessages,
     listFolderMessages,
+    listFolderMessagesAll,
+    batchRequest,
     getMessage,
     listAttachments,
     listMailFolders,
