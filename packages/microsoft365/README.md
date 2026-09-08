@@ -282,6 +282,23 @@ Note that `scan_messages` refs are per-mailbox: a ref from one mailbox passed to
 addressing another is refused with an explanation rather than resolving to the wrong
 message.
 
+### Cleaning a large inbox
+
+A mailbox with tens of thousands of messages is mostly a few hundred senders repeating.
+Two tools make that tractable without paging headers through the model:
+
+1. `summarize_senders` reads the whole folder server-side and returns one row per
+   sender — count, unread, first and last date, latest subject — most frequent first.
+2. `move_messages_matching` moves everything from chosen senders (or matching an OData
+   filter) to a destination, using Graph JSON batching (20 moves per round-trip, with
+   throttling retried). It is a dry run unless `dry_run: false` is passed, and a live
+   run refuses to move more than `limit` (default 1000) messages, so a mis-scoped
+   filter cannot empty a folder. `destination: deleteditems` is the bulk-delete: it is
+   reversible from Deleted Items, and a hard delete is deliberately not offered.
+
+Both fetch without `$orderby` — Graph rejects a `from/emailAddress` filter combined with
+a `receivedDateTime` sort ("The restriction or sort order is too complex").
+
 ### Safety Layers
 
 | Layer                    | Protection                                                   | Default                                                       |
@@ -344,7 +361,7 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 
 ## Available Tools
 
-### Mail (21 tools)
+### Mail (23 tools)
 
 | Tool                           | Description                                                               |
 | ------------------------------ | ------------------------------------------------------------------------- |
@@ -369,6 +386,8 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `list_mail_folders`            | List top-level mail folders with item, unread and subfolder counts        |
 | `move_message`                 | Move a message to a well-known folder, a folder name, or a folder ID      |
 | `batch_move_messages`          | Move up to 50 messages to one folder in a single call                     |
+| `summarize_senders`            | Count a folder by sender, server-side — find what to sweep                |
+| `move_messages_matching`       | Move everything matching senders/filter, batched; dry-run by default      |
 
 `scan_messages` returns a compact list of message headers. If there’s another page,
 it includes a `cursor` — pass that back on its own to continue the same scan, even if
