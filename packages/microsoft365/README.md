@@ -315,8 +315,8 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `save_attachment`        | Save an attachment to a local file and return its path                   |
 | `move_message`           | Move a message to another folder                                         |
 | `batch_move_messages`    | Move many messages in one call                                           |
-| `summarize_senders`      | Count a folder by sender, server-side — find what to sweep                |
-| `move_messages_matching` | Move everything matching senders/filter, batched; dry-run by default      |
+| `summarize_senders`      | Count a folder by sender, server-side — find what to sweep               |
+| `move_messages_matching` | Move everything matching senders/filter, batched; dry-run by default     |
 | `list_mail_folders`      | List mail folders with item and unread counts                            |
 | `send_message`           | Send a new email                                                         |
 | `send_reply`             | Reply to the sender and send now (threaded, original quoted)             |

@@ -63,6 +63,29 @@ describe("resolveRequiredScopes", () => {
     ])
   })
 
+  // App-only tokens carry roles, not delegated scopes: Mail.ReadWrite as an application
+  // permission already reaches whatever the tenant policy allows, and no .Shared variant
+  // exists to grant. Requiring one would be an unfixable false positive.
+  it.each(["client-secret", "certificate"])("requires no shared scope in %s mode", (mode) => {
+    expect(
+      resolveRequiredScopes({
+        MS365_ALLOWED_MAILBOXES: "bel@example.com",
+        MS365_AUTH_MODE: mode,
+      } as NodeJS.ProcessEnv),
+    ).toEqual([])
+  })
+
+  it("still requires the shared scope in the delegated modes", () => {
+    for (const mode of ["interactive", "oauth-proxy", "client-token"]) {
+      expect(
+        resolveRequiredScopes({
+          MS365_ALLOWED_MAILBOXES: "bel@example.com",
+          MS365_AUTH_MODE: mode,
+        } as NodeJS.ProcessEnv),
+      ).toEqual(["Mail.ReadWrite.Shared"])
+    }
+  })
+
   // A read-only deployment cannot write anywhere, so demanding the write scope would
   // report drift that no permission change could ever satisfy.
   it("requires only the shared read scope in read-only mode", () => {

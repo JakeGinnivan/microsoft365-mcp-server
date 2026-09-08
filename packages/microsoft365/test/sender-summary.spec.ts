@@ -70,7 +70,11 @@ describe("summarizeSenders", () => {
 })
 
 describe("formatSenderSummary", () => {
-  const rows = summarizeSenders([msg("a@x.com", "2026-01-01"), msg("a@x.com", "2026-01-02"), msg("b@y.com", "2026-01-03")])
+  const rows = summarizeSenders([
+    msg("a@x.com", "2026-01-01"),
+    msg("a@x.com", "2026-01-02"),
+    msg("b@y.com", "2026-01-03"),
+  ])
 
   it("reports totals and one pipe row per sender", () => {
     const out = formatSenderSummary(rows, { folder: "inbox", total: 3, unread: 3, groupBy: "address", top: 100 })
