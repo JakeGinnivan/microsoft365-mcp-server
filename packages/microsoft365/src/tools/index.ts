@@ -33,6 +33,7 @@ export {
   listMailFolders,
   listMessages,
   moveMessage,
+  moveMessagesMatching,
   scanMessages,
   searchMessages,
   sendDraft,
@@ -40,6 +41,7 @@ export {
   sendMessage,
   sendReply,
   sendReplyAll,
+  summarizeSenders,
 } from "./mail-tools"
 export { getMeetingTranscript, listMeetingTranscripts } from "./meetings-tools"
 export {

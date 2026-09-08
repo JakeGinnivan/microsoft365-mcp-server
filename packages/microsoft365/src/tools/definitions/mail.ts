@@ -13,6 +13,7 @@ import {
   listMailFolders,
   listMessages,
   moveMessage,
+  moveMessagesMatching,
   saveAttachment,
   scanMessages,
   searchMessages,
@@ -21,6 +22,7 @@ import {
   sendMessage,
   sendReply,
   sendReplyAll,
+  summarizeSenders,
 } from ".."
 import type { ToolDefinition } from "../tool-definitions"
 import { FETCH_ALL_PAGES_PARAM, MAILBOX_PARAM, unwrapResult } from "./shared"
@@ -131,6 +133,79 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
       mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await batchMoveMessages(params)),
+    domain: "mail",
+    readOnly: false,
+    annotations: { destructiveHint: true },
+  },
+  {
+    name: "summarize_senders",
+    description:
+      "Count a folder's messages by sender, server-side, without listing them. Returns one row per sender " +
+      "(count, unread, first and last date, address, name, latest subject), most frequent first — the " +
+      "starting point for cleaning a large inbox: newsletters, promotions and notifications show up as a " +
+      "few hundred senders repeating.\n\n" +
+      "Reads every matching message in the folder (paged internally, up to ~50,000) so the counts are " +
+      "complete; only the summary is returned. Narrow with filter (OData, e.g. a receivedDateTime range) " +
+      "when only part of a folder matters. Use group_by: domain to see families of senders, then " +
+      "group_by: address to get the addresses move_messages_matching needs.",
+    parameters: z.object({
+      folder: z
+        .string()
+        .optional()
+        .describe("Folder to summarise: well-known name (inbox, archive), display name, or ID. Default: inbox"),
+      filter: z
+        .string()
+        .optional()
+        .describe('Optional OData filter to narrow the set, e.g. "receivedDateTime lt 2025-01-01T00:00:00Z"'),
+      group_by: z
+        .enum(["address", "domain"])
+        .optional()
+        .describe("Group by full sender address (default) or by the domain after the @"),
+      top: z.number().optional().describe("How many senders to show (default 100, max 1000)"),
+      mailbox: MAILBOX_PARAM,
+    }),
+    execute: async (params) => unwrapResult(await summarizeSenders(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "move_messages_matching",
+    description:
+      "Move every message in a folder that matches a sender list and/or an OData filter — the bulk step of " +
+      "an inbox clean-up. Pass senders (addresses from summarize_senders) and/or filter; a whole folder " +
+      "with no condition is refused. Destination deleteditems is how to bulk-delete: it is reversible from " +
+      "Deleted Items, and a hard delete is deliberately not offered.\n\n" +
+      "SAFE BY DEFAULT: dry_run is true unless set to false. A dry run fetches the matching set and reports " +
+      "the count, date range, sender breakdown and newest subjects, moving nothing — read it before " +
+      "re-running with dry_run: false. A live run refuses to move more than limit messages (default 1000) so " +
+      "a mis-scoped filter cannot empty a folder; raise limit explicitly when the dry-run count is intended.\n\n" +
+      "Moves go through Graph JSON batching (20 per round-trip, throttling retried), so thousands of " +
+      "messages take seconds, not minutes, and no message IDs pass through the caller.",
+    parameters: z.object({
+      folder: z.string().describe("Folder to sweep: well-known name (inbox), display name, or ID. Required."),
+      destination: z
+        .string()
+        .describe("Where matches go: well-known name (deleteditems, archive, junkemail), display name, or ID"),
+      senders: z
+        .array(z.string())
+        .optional()
+        .describe("Sender addresses to match, exact and case-insensitive (max 20 per call)"),
+      filter: z
+        .string()
+        .optional()
+        .describe('OData filter, e.g. "receivedDateTime lt 2025-01-01T00:00:00Z". Combined with senders using AND.'),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe("Default true: report what would move and move nothing. Pass false to move."),
+      limit: z
+        .number()
+        .optional()
+        .describe("Refuse a live run that would move more than this many (default 1000, max 20000)"),
+      mailbox: MAILBOX_PARAM,
+    }),
+    execute: async (params) => unwrapResult(await moveMessagesMatching(params)),
     domain: "mail",
     readOnly: false,
     annotations: { destructiveHint: true },

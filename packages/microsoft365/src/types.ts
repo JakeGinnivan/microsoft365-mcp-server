@@ -81,6 +81,15 @@ export type GraphMessage = {
   readonly importance?: string
 }
 
+export type GraphBatchResponse = {
+  readonly responses: ReadonlyArray<{
+    readonly id: string
+    readonly status: number
+    readonly headers?: Record<string, string>
+    readonly body?: unknown
+  }>
+}
+
 export type GraphMailFolder = {
   readonly id: string
   readonly displayName?: string
