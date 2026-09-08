@@ -280,6 +280,11 @@ const main = async (): Promise<void> => {
     prefix,
     rules.destination,
     (requests) => client.request<GraphBatchResponse>("POST", "/$batch", { body: { requests } }),
+    undefined,
+    (done, total, failed) => {
+      // Every 200 messages and at the end: enough to see it is alive without a wall of lines.
+      if (done % 200 === 0 || done === total) console.error(`[sweep] ${done}/${total} processed, ${failed} failed`)
+    },
   )
   const byId = new Map(toDelete.map(({ m }) => [m.id, m]))
   writeFileSync(
