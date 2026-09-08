@@ -140,12 +140,15 @@ export const runMoveBatches = async (
   destinationId: string,
   send: BatchSender,
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  onProgress?: (done: number, total: number, failed: number) => void,
 ): Promise<MoveRunResult> =>
   chunk(messageIds, BATCH_SIZE).reduce<Promise<MoveRunResult>>(
     async (acc, ids) => {
       const soFar = await acc
       const result = await runChunk(ids, prefix, destinationId, send, wait)
-      return { moved: [...soFar.moved, ...result.moved], failed: [...soFar.failed, ...result.failed] }
+      const next = { moved: [...soFar.moved, ...result.moved], failed: [...soFar.failed, ...result.failed] }
+      onProgress?.(next.moved.length + next.failed.length, messageIds.length, next.failed.length)
+      return next
     },
     Promise.resolve({ moved: [], failed: [] }),
   )
