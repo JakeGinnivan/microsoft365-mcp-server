@@ -49,13 +49,25 @@ export const missingScopes = (granted: ReadonlyArray<string>, required: Required
  * required would invalidate the cache for any deployment whose tenant declined one
  * optional permission, which is worse than the problem being solved.
  */
+// Delegated modes carry per-user scopes in `scp`; app-only modes carry app roles in
+// `roles`, and the two vocabularies do not overlap. A .Shared scope is meaningless
+// app-only: the application permission Mail.ReadWrite already reaches every mailbox the
+// tenant's ApplicationAccessPolicy allows, and there is no "shared" variant to grant.
+const isAppOnly = (mode: string): boolean => mode === "client-secret" || mode === "certificate"
+
 export const resolveRequiredScopes = (env: NodeJS.ProcessEnv = process.env): RequiredScopes => {
   const required: string[] = []
 
   // Addressing another mailbox needs a .Shared scope; the non-shared one does not grant
   // it. This is the case that motivated the check: MS365_ALLOWED_MAILBOXES is set, the
   // app registration has been updated, and the cached token predates the change.
-  if ((env.MS365_ALLOWED_MAILBOXES ?? "").trim().length > 0) {
+  //
+  // App-only is exempt. Requiring .Shared there would report a shortfall that no consent
+  // could ever satisfy, and send the operator off to grant a permission that does not
+  // apply to the mode they are running — worse than saying nothing, because it looks
+  // like a real finding at exactly the moment they are switching modes.
+  const mode = env.MS365_AUTH_MODE ?? "interactive"
+  if (!isAppOnly(mode) && (env.MS365_ALLOWED_MAILBOXES ?? "").trim().length > 0) {
     required.push(env.MS365_READ_ONLY === "true" ? "Mail.Read.Shared" : "Mail.ReadWrite.Shared")
   }
 

@@ -100,9 +100,11 @@ describe("runMoveBatches", () => {
   })
 
   it("does not retry a non-transient failure", async () => {
-    const send = vi.fn().mockResolvedValue(
-      Right({ responses: [{ id: "a", status: 404, body: { error: { code: "ErrorItemNotFound" } } }] }),
-    )
+    const send = vi
+      .fn()
+      .mockResolvedValue(
+        Right({ responses: [{ id: "a", status: 404, body: { error: { code: "ErrorItemNotFound" } } }] }),
+      )
     const result = await runMoveBatches(["a"], "/me", "archive", send)
     expect(send).toHaveBeenCalledTimes(1)
     expect(result.failed[0]!.error).toContain("ErrorItemNotFound")
