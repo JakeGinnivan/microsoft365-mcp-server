@@ -493,6 +493,19 @@ const SCAN_FIELDS = ["id", "subject", "from", "receivedDateTime", "isRead", "has
 // Graph's own ceiling for $top on messages.
 const MAX_PAGE = 999
 
+// Graph's rule for combining $filter with $orderby on messages: every property in the
+// $orderby must also appear in the $filter, and before any other property. A filter on
+// from/emailAddress alone therefore fails with "The restriction or sort order is too
+// complex for this operation". Prefixing an always-true receivedDateTime clause
+// satisfies the rule without changing what matches.
+const ORDERED_FILTER_PREFIX = "receivedDateTime ge 1900-01-01T00:00:00Z"
+export const orderedFilter = (filter: string | undefined): string | undefined =>
+  filter === undefined || filter.trim().length === 0
+    ? undefined
+    : /^\s*receivedDateTime\b/.test(filter)
+      ? filter
+      : `${ORDERED_FILTER_PREFIX} and (${filter})`
+
 export const scanMessages = async (params: {
   folder?: string
   filter?: string
@@ -525,7 +538,8 @@ export const scanMessages = async (params: {
   // learns that without paying for a separate $count request.
   const odataParams = {
     $select: [...SCAN_FIELDS],
-    $filter: params.filter,
+    // Only a sorted scan needs the prefix; a search has no $orderby to conflict with.
+    $filter: params.search ? params.filter : orderedFilter(params.filter),
     $search: params.search,
     $top: top + 1,
     $skip: params.skip,

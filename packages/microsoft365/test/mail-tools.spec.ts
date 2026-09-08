@@ -22,6 +22,7 @@ import {
   listMailFolders,
   moveMessage,
   moveMessagesMatching,
+  orderedFilter,
   sendDraft,
   sendForward,
   sendMessage,
@@ -726,5 +727,32 @@ describe("moveMessagesMatching", () => {
     mockClient.listFolderMessagesAll.mockResolvedValue(Right([]))
     const result = await moveMessagesMatching({ folder: "Promos", destination: "Promos", senders: ["a@x.com"] })
     expect(result.isLeft()).toBe(true)
+  })
+})
+
+describe("orderedFilter", () => {
+  it("prefixes a filter that lacks the sort property so Graph accepts it with $orderby", () => {
+    expect(orderedFilter("from/emailAddress/address eq 'a@x.com'")).toBe(
+      "receivedDateTime ge 1900-01-01T00:00:00Z and (from/emailAddress/address eq 'a@x.com')",
+    )
+  })
+
+  it("leaves a filter that already leads with receivedDateTime alone", () => {
+    expect(orderedFilter("receivedDateTime ge 2026-01-01T00:00:00Z and hasAttachments eq true")).toBe(
+      "receivedDateTime ge 2026-01-01T00:00:00Z and hasAttachments eq true",
+    )
+  })
+
+  it("passes undefined and blank through", () => {
+    expect(orderedFilter(undefined)).toBeUndefined()
+    expect(orderedFilter("  ")).toBeUndefined()
+  })
+
+  it("is applied by scanMessages to a sorted scan", async () => {
+    mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+    await scanMessages({ filter: "hasAttachments eq true" })
+    const [odata] = mockClient.listMessages.mock.calls[0]!
+    expect(odata.$filter).toBe("receivedDateTime ge 1900-01-01T00:00:00Z and (hasAttachments eq true)")
+    expect(odata.$orderby).toBe("receivedDateTime desc")
   })
 })
