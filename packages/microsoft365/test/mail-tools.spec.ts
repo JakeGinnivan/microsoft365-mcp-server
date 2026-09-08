@@ -17,13 +17,18 @@ import {
   createReplyDraft,
   listAttachments,
   getMessage,
+  scanMessages,
+  listAttachments as listAttachmentsTool,
   listMailFolders,
   moveMessage,
+  moveMessagesMatching,
+  orderedFilter,
   sendDraft,
   sendForward,
   sendMessage,
   sendReply,
   sendReplyAll,
+  summarizeSenders,
 } from "../src/tools/mail-tools"
 
 const mockClient = {
@@ -39,8 +44,12 @@ const mockClient = {
   getMessage: vi.fn(),
   listAttachments: vi.fn(),
   listMailFolders: vi.fn(),
+  listFolderMessages: vi.fn(),
+  listMessages: vi.fn(),
   moveMessage: vi.fn(),
   requestPaginated: vi.fn(),
+  listFolderMessagesAll: vi.fn(),
+  batchRequest: vi.fn(),
 }
 
 beforeEach(() => {
@@ -55,25 +64,31 @@ describe("mail-tools", () => {
       const result = await sendMessage({ to: "alice@example.com", subject: "Hi", body: "Hello" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("alice@example.com")
-      expect(mockClient.sendMessage).toHaveBeenCalledWith({
-        message: {
-          subject: "Hi",
-          body: { contentType: "Text", content: "Hello" },
-          toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
+      expect(mockClient.sendMessage).toHaveBeenCalledWith(
+        {
+          message: {
+            subject: "Hi",
+            body: { contentType: "Text", content: "Hello" },
+            toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
+          },
         },
-      })
+        "/me",
+      )
     })
 
     it("should send a message with HTML content type", async () => {
       mockClient.sendMessage.mockResolvedValue(Right({}))
       await sendMessage({ to: "bob@example.com", subject: "Hi", body: "<b>Bold</b>", content_type: "HTML" })
-      expect(mockClient.sendMessage).toHaveBeenCalledWith({
-        message: {
-          subject: "Hi",
-          body: { contentType: "HTML", content: "<b>Bold</b>" },
-          toRecipients: [{ emailAddress: { address: "bob@example.com" } }],
+      expect(mockClient.sendMessage).toHaveBeenCalledWith(
+        {
+          message: {
+            subject: "Hi",
+            body: { contentType: "HTML", content: "<b>Bold</b>" },
+            toRecipients: [{ emailAddress: { address: "bob@example.com" } }],
+          },
         },
-      })
+        "/me",
+      )
     })
 
     it("should split comma-separated 'to' into multiple toRecipients", async () => {
@@ -113,11 +128,14 @@ describe("mail-tools", () => {
       const result = await createDraft({ to: "alice@example.com", subject: "Draft", body: "Content" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-123")
-      expect(mockClient.createDraft).toHaveBeenCalledWith({
-        subject: "Draft",
-        body: { contentType: "Text", content: "Content" },
-        toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
-      })
+      expect(mockClient.createDraft).toHaveBeenCalledWith(
+        {
+          subject: "Draft",
+          body: { contentType: "Text", content: "Content" },
+          toRecipients: [{ emailAddress: { address: "alice@example.com" } }],
+        },
+        "/me",
+      )
     })
 
     it("should create a draft with HTML content type", async () => {
@@ -127,6 +145,7 @@ describe("mail-tools", () => {
         expect.objectContaining({
           body: { contentType: "HTML", content: "<p>Hi</p>" },
         }),
+        "/me",
       )
     })
 
@@ -145,6 +164,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "carol@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -155,6 +175,7 @@ describe("mail-tools", () => {
         expect.objectContaining({
           bccRecipients: [{ emailAddress: { address: "secret@example.com" } }],
         }),
+        "/me",
       )
     })
 
@@ -173,6 +194,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "carol@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -198,6 +220,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "carol@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -215,6 +238,7 @@ describe("mail-tools", () => {
             { emailAddress: { address: "bob@example.com" } },
           ],
         }),
+        "/me",
       )
     })
 
@@ -232,7 +256,7 @@ describe("mail-tools", () => {
       const result = await sendDraft({ message_id: "draft-123" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Draft sent successfully")
-      expect(mockClient.sendDraft).toHaveBeenCalledWith("draft-123")
+      expect(mockClient.sendDraft).toHaveBeenCalledWith("draft-123", "/me")
     })
   })
 
@@ -242,7 +266,7 @@ describe("mail-tools", () => {
       const result = await sendReply({ message_id: "msg-1", comment: "Thanks!" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Reply sent successfully")
-      expect(mockClient.sendReply).toHaveBeenCalledWith("msg-1", "Thanks!")
+      expect(mockClient.sendReply).toHaveBeenCalledWith("msg-1", "Thanks!", "/me")
     })
   })
 
@@ -252,7 +276,7 @@ describe("mail-tools", () => {
       const result = await sendReplyAll({ message_id: "msg-1", comment: "Thanks all!" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Reply-all sent successfully")
-      expect(mockClient.sendReplyAll).toHaveBeenCalledWith("msg-1", "Thanks all!")
+      expect(mockClient.sendReplyAll).toHaveBeenCalledWith("msg-1", "Thanks all!", "/me")
     })
   })
 
@@ -262,17 +286,23 @@ describe("mail-tools", () => {
       const result = await sendForward({ message_id: "msg-1", to: "alice@example.com", comment: "FYI" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("alice@example.com")
-      expect(mockClient.sendForward).toHaveBeenCalledWith("msg-1", "FYI", [
-        { emailAddress: { address: "alice@example.com" } },
-      ])
+      expect(mockClient.sendForward).toHaveBeenCalledWith(
+        "msg-1",
+        "FYI",
+        [{ emailAddress: { address: "alice@example.com" } }],
+        "/me",
+      )
     })
 
     it("should default an omitted comment to an empty string", async () => {
       mockClient.sendForward.mockResolvedValue(Right({}))
       await sendForward({ message_id: "msg-1", to: "alice@example.com" })
-      expect(mockClient.sendForward).toHaveBeenCalledWith("msg-1", "", [
-        { emailAddress: { address: "alice@example.com" } },
-      ])
+      expect(mockClient.sendForward).toHaveBeenCalledWith(
+        "msg-1",
+        "",
+        [{ emailAddress: { address: "alice@example.com" } }],
+        "/me",
+      )
     })
 
     it("should reject an empty 'to' field", async () => {
@@ -290,7 +320,7 @@ describe("mail-tools", () => {
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-r1")
       expect(result.value).toContain("send_draft")
-      expect(mockClient.createReplyDraft).toHaveBeenCalledWith("msg-1", "Will do")
+      expect(mockClient.createReplyDraft).toHaveBeenCalledWith("msg-1", "Will do", "/me")
     })
   })
 
@@ -300,7 +330,7 @@ describe("mail-tools", () => {
       const result = await createReplyAllDraft({ message_id: "msg-1", comment: "Will do" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-ra1")
-      expect(mockClient.createReplyAllDraft).toHaveBeenCalledWith("msg-1", "Will do")
+      expect(mockClient.createReplyAllDraft).toHaveBeenCalledWith("msg-1", "Will do", "/me")
     })
   })
 
@@ -310,9 +340,12 @@ describe("mail-tools", () => {
       const result = await createForwardDraft({ message_id: "msg-1", to: "alice@example.com", comment: "FYI" })
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("draft-f1")
-      expect(mockClient.createForwardDraft).toHaveBeenCalledWith("msg-1", "FYI", [
-        { emailAddress: { address: "alice@example.com" } },
-      ])
+      expect(mockClient.createForwardDraft).toHaveBeenCalledWith(
+        "msg-1",
+        "FYI",
+        [{ emailAddress: { address: "alice@example.com" } }],
+        "/me",
+      )
     })
 
     it("should reject an empty 'to' field", async () => {
@@ -332,7 +365,7 @@ describe("mail-tools", () => {
       expect(result.isRight()).toBe(true)
       expect(result.value).toContain("Archive")
       expect(result.value).toContain("12 items, 3 unread")
-      expect(mockClient.listMailFolders).toHaveBeenCalledWith({ $top: 100 })
+      expect(mockClient.listMailFolders).toHaveBeenCalledWith({ $top: 100 }, "/me")
     })
 
     it("should page through all folders when asked", async () => {
@@ -349,7 +382,7 @@ describe("mail-tools", () => {
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1", subject: "Receipt" }))
       const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
       expect(result.isRight()).toBe(true)
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "archive")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "archive", "/me")
       expect(mockClient.listMailFolders).not.toHaveBeenCalled()
     })
 
@@ -372,14 +405,14 @@ describe("mail-tools", () => {
     it("should map a well-known alias and ignore case", async () => {
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "Deleted Items" })
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "deleteditems")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "deleteditems", "/me")
     })
 
     it("should resolve a folder display name to its ID", async () => {
       mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-receipts", displayName: "Receipts" }] }))
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "Receipts" })
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts", "/me")
     })
 
     it("should error rather than guess when a display name is ambiguous", async () => {
@@ -402,21 +435,21 @@ describe("mail-tools", () => {
       mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Archive" }] }))
       mockClient.moveMessage.mockResolvedValue(Right({ id: "msg-1" }))
       await moveMessage({ message_id: "msg-1", destination: "AAMkAGI0-opaque-id" })
-      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "AAMkAGI0-opaque-id")
+      expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "AAMkAGI0-opaque-id", "/me")
     })
   })
   describe("getMessage body_format", () => {
     it("should request no Prefer header by default", async () => {
       mockClient.getMessage.mockResolvedValue(Right({ id: "m1", subject: "Hi" }))
       await getMessage({ message_id: "m1" })
-      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", undefined)
+      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", undefined, "/me")
     })
 
     // Marketing mail is mostly CSS; asking Graph for text is a large context saving.
     it("should pass the requested body format through", async () => {
       mockClient.getMessage.mockResolvedValue(Right({ id: "m1", subject: "Hi" }))
       await getMessage({ message_id: "m1", body_format: "text" })
-      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", "text")
+      expect(mockClient.getMessage).toHaveBeenCalledWith("m1", "text", "/me")
     })
   })
 
@@ -513,5 +546,213 @@ describe("mail-tools", () => {
       expect(result.isLeft()).toBe(true)
       expect((result.value as Error).message).toContain("Failed to list attachments")
     })
+  })
+})
+
+describe("scanMessages paging safety", () => {
+  // Graph silently ignores $skip when $search is set: it returns page one again
+  // rather than erroring. A caller paging a search would re-read the same rows while
+  // believing it was advancing, then conclude the mailbox held nothing more. Failing
+  // loudly is the only way that surfaces.
+  it("refuses skip combined with search, and says how to page instead", async () => {
+    const result = await scanMessages({ search: "invoice", skip: 100 })
+
+    expect(result.isLeft()).toBe(true)
+    const message = (result.value as { message: string }).message
+    expect(message).toContain("silently")
+    expect(message).toContain("received:")
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+
+  it("allows skip on a filter scan, which Graph does honour", async () => {
+    mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+
+    const result = await scanMessages({ filter: "hasAttachments eq true", skip: 100 })
+
+    expect(result.isRight()).toBe(true)
+    expect(mockClient.listMessages).toHaveBeenCalled()
+  })
+
+  it("allows search on its own", async () => {
+    mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+
+    const result = await scanMessages({ search: "invoice" })
+
+    expect(result.isRight()).toBe(true)
+  })
+})
+
+describe("scan refs work across message tools", () => {
+  // scan_messages returns short refs, but only get_message resolved them at first.
+  // list_attachments — the tool an attachment sweep leans on hardest — rejected them
+  // as malformed IDs, breaking the scan-then-open loop at exactly the wrong point.
+  it("rejects an unknown ref with guidance instead of a Graph error", async () => {
+    const result = await listAttachments({ message_id: "999999" })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain("scan_messages")
+    expect(mockClient.listAttachments).not.toHaveBeenCalled()
+  })
+
+  it("still passes a full Graph ID straight through", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [] }))
+    const graphId = "AAMkAGI0YjA3OTNhLWY2MDEtNGZlYy1hNzU2LTE4NDFiODg5ZjliMg=="
+
+    await listAttachments({ message_id: graphId })
+
+    expect(mockClient.listAttachments).toHaveBeenCalledWith(graphId, "/me")
+  })
+})
+
+const sweepMessage = (id: string, address: string, received: string): GraphMessage => ({
+  id,
+  subject: `Subject ${id}`,
+  from: { emailAddress: { name: "Sender", address } },
+  receivedDateTime: `${received}T00:00:00Z`,
+  isRead: false,
+})
+
+describe("summarizeSenders", () => {
+  it("reads the whole folder without an orderby and returns counts per sender", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [] }))
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([
+        sweepMessage("1", "news@x.com", "2026-01-01"),
+        sweepMessage("2", "news@x.com", "2026-01-02"),
+        sweepMessage("3", "bob@y.com", "2026-01-03"),
+      ]),
+    )
+    const result = await summarizeSenders({ mailbox: undefined })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toContain("3 messages in inbox")
+    expect(result.value).toContain("2|2|2026-01-01|2026-01-02|news@x.com")
+    const [, odata] = mockClient.listFolderMessagesAll.mock.calls[0]!
+    expect(odata.$orderby).toBeUndefined()
+    expect(odata.$top).toBe(999)
+  })
+})
+
+describe("moveMessagesMatching", () => {
+  beforeEach(() => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [] }))
+  })
+
+  it("refuses a sweep with neither senders nor filter", async () => {
+    const result = await moveMessagesMatching({ folder: "inbox", destination: "deleteditems" })
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.listFolderMessagesAll).not.toHaveBeenCalled()
+  })
+
+  it("builds an exact-address filter from senders, escaped for OData", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(Right([]))
+    await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["News@X.com", "o'brien@y.com"],
+      filter: "receivedDateTime lt 2025-01-01T00:00:00Z",
+    })
+    const [, odata] = mockClient.listFolderMessagesAll.mock.calls[0]!
+    expect(odata.$filter).toBe(
+      "(from/emailAddress/address eq 'news@x.com' or from/emailAddress/address eq 'o''brien@y.com') and (receivedDateTime lt 2025-01-01T00:00:00Z)",
+    )
+  })
+
+  // The default must be the safe path: a caller who forgets dry_run gets a report,
+  // not a moved folder.
+  it("is a dry run by default and moves nothing", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([sweepMessage("1", "news@x.com", "2026-01-01"), sweepMessage("2", "news@x.com", "2026-01-05")]),
+    )
+    const result = await moveMessagesMatching({ folder: "inbox", destination: "deleteditems", senders: ["news@x.com"] })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toContain("2 messages in inbox match")
+    expect(result.value).toContain("Oldest 2026-01-01, newest 2026-01-05")
+    expect(result.value).toContain("Nothing was moved")
+    expect(mockClient.batchRequest).not.toHaveBeenCalled()
+  })
+
+  it("refuses a live run above the limit instead of moving part of it", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([sweepMessage("1", "a@x.com", "2026-01-01"), sweepMessage("2", "a@x.com", "2026-01-02")]),
+    )
+    const result = await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["a@x.com"],
+      dry_run: false,
+      limit: 1,
+    })
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain("2 messages match, above the limit of 1")
+    expect(mockClient.batchRequest).not.toHaveBeenCalled()
+  })
+
+  it("moves through $batch and reports the count", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(
+      Right([sweepMessage("1", "a@x.com", "2026-01-01"), sweepMessage("2", "a@x.com", "2026-01-02")]),
+    )
+    mockClient.batchRequest.mockImplementation(async (requests: ReadonlyArray<{ id: string }>) =>
+      Right({ responses: requests.map((r) => ({ id: r.id, status: 201 })) }),
+    )
+    const result = await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["a@x.com"],
+      dry_run: false,
+      mailbox: undefined,
+    })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toBe("Moved 2/2 message(s) from inbox to deleteditems.")
+    const [requests] = mockClient.batchRequest.mock.calls[0]!
+    expect(requests[0]).toMatchObject({ url: "/me/messages/1/move", body: { destinationId: "deleteditems" } })
+  })
+
+  it("lists failures by subject", async () => {
+    mockClient.listFolderMessagesAll.mockResolvedValue(Right([sweepMessage("1", "a@x.com", "2026-01-01")]))
+    mockClient.batchRequest.mockResolvedValue(
+      Right({ responses: [{ id: "1", status: 404, body: { error: { code: "ErrorItemNotFound", message: "gone" } } }] }),
+    )
+    const result = await moveMessagesMatching({
+      folder: "inbox",
+      destination: "deleteditems",
+      senders: ["a@x.com"],
+      dry_run: false,
+    })
+    expect(result.value).toContain("Moved 0/1")
+    expect(result.value).toContain('FAILED "Subject 1": ErrorItemNotFound gone')
+  })
+
+  it("refuses when the destination is the folder being swept", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Promos" }] }))
+    mockClient.listFolderMessagesAll.mockResolvedValue(Right([]))
+    const result = await moveMessagesMatching({ folder: "Promos", destination: "Promos", senders: ["a@x.com"] })
+    expect(result.isLeft()).toBe(true)
+  })
+})
+
+describe("orderedFilter", () => {
+  it("prefixes a filter that lacks the sort property so Graph accepts it with $orderby", () => {
+    expect(orderedFilter("from/emailAddress/address eq 'a@x.com'")).toBe(
+      "receivedDateTime ge 1900-01-01T00:00:00Z and (from/emailAddress/address eq 'a@x.com')",
+    )
+  })
+
+  it("leaves a filter that already leads with receivedDateTime alone", () => {
+    expect(orderedFilter("receivedDateTime ge 2026-01-01T00:00:00Z and hasAttachments eq true")).toBe(
+      "receivedDateTime ge 2026-01-01T00:00:00Z and hasAttachments eq true",
+    )
+  })
+
+  it("passes undefined and blank through", () => {
+    expect(orderedFilter(undefined)).toBeUndefined()
+    expect(orderedFilter("  ")).toBeUndefined()
+  })
+
+  it("is applied by scanMessages to a sorted scan", async () => {
+    mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+    await scanMessages({ filter: "hasAttachments eq true" })
+    const [odata] = mockClient.listMessages.mock.calls[0]!
+    expect(odata.$filter).toBe("receivedDateTime ge 1900-01-01T00:00:00Z and (hasAttachments eq true)")
+    expect(odata.$orderby).toBe("receivedDateTime desc")
   })
 })

@@ -81,6 +81,15 @@ export type GraphMessage = {
   readonly importance?: string
 }
 
+export type GraphBatchResponse = {
+  readonly responses: ReadonlyArray<{
+    readonly id: string
+    readonly status: number
+    readonly headers?: Record<string, string>
+    readonly body?: unknown
+  }>
+}
+
 export type GraphMailFolder = {
   readonly id: string
   readonly displayName?: string
@@ -99,6 +108,14 @@ export type GraphAttachment = {
   readonly lastModifiedDateTime?: string
   /** @odata.type — distinguishes fileAttachment from itemAttachment / referenceAttachment. */
   readonly "@odata.type"?: string
+  /** referenceAttachment only: the OneDrive/SharePoint URL the attachment points at. */
+  readonly sourceUrl?: string
+  /** referenceAttachment only: "oneDriveBusiness" | "oneDriveConsumer" | "dropbox" | "other". */
+  readonly providerType?: string
+  /** referenceAttachment only: whether the link grants view or edit access. */
+  readonly permission?: string
+  /** referenceAttachment only: true when the target is a folder rather than a file. */
+  readonly isFolder?: boolean
 }
 
 export type GraphEvent = {
