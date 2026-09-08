@@ -57,8 +57,8 @@ export const mailTools: ReadonlyArray<ToolDefinition> = [
         .string()
         .optional()
         .describe(
-          'OData filter, e.g. "receivedDateTime ge 2026-01-01T00:00:00Z" or "hasAttachments eq true". ' +
-            "Pageable with skip — use this, not search, when coverage matters.",
+          'OData filter, e.g. "receivedDateTime ge 2026-01-01T00:00:00Z", "hasAttachments eq true" or ' +
+            "\"from/emailAddress/address eq 'x@y.com'\". Pageable with skip — use this, not search, when coverage matters.",
         ),
       search: z
         .string()
