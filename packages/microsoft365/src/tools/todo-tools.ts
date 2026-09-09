@@ -1,12 +1,13 @@
 import { UserError } from "fastmcp"
+import { Option } from "functype"
 import type { Either } from "functype/either"
 import { Left } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
-import type { GraphTodoList, GraphTodoTask, ODataResponse } from "../types"
+import type { GraphApiError, GraphTodoList, GraphTodoTask, ODataResponse } from "../types"
 import { formatTodoListList, formatTodoTaskDetail, formatTodoTaskList } from "../utils/formatters"
 import type { RecurrenceInput } from "../utils/recurrence"
-import { buildRecurrence } from "../utils/recurrence"
+import { buildRecurrence, describeRecurrence } from "../utils/recurrence"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -87,6 +88,45 @@ export const createTodoTask = async (params: {
     .map((t) => `Task created.\n\n${formatTodoTaskDetail(t)}`)
 }
 
+export const deleteTodoTask = async (params: {
+  list_id: string
+  task_id: string
+  force?: boolean
+}): Promise<Either<UserError, string>> => {
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  // Read before deleting. A task id addresses the whole recurring series, not one
+  // occurrence, so deleting one ends the series — and To Do has no recycle bin or
+  // restore, which makes this the last chance to say so.
+  const existing = await client.getTodoTask(params.list_id, params.task_id)
+  if (existing.isLeft()) {
+    return Left(new UserError(`Failed to read the task before deleting: ${(existing.value as GraphApiError).message}`))
+  }
+
+  const task = existing.value as GraphTodoTask
+  const title = task.title ?? "Untitled"
+
+  if (task.recurrence && !params.force) {
+    return Left(
+      new UserError(
+        `"${title}" repeats ${describeRecurrence(task.recurrence)}. Deleting it ends the whole series, ` +
+          `not just this occurrence, and To Do has no undo. Pass force: true to go ahead, or use ` +
+          `clear_recurrence on update_todo_task to keep the task but stop it repeating.`,
+      ),
+    )
+  }
+
+  const result = await client.deleteTodoTask(params.list_id, params.task_id)
+  return result
+    .mapLeft((error) => new UserError(`Failed to delete task: ${error.message}`))
+    .map(() =>
+      task.recurrence
+        ? `Deleted "${title}" and its whole recurring series (was ${describeRecurrence(task.recurrence)}).`
+        : `Deleted "${title}".`,
+    )
+}
+
 export const updateTodoTask = async (params: {
   list_id: string
   task_id: string
@@ -125,5 +165,26 @@ export const updateTodoTask = async (params: {
   const result = await client.updateTodoTask(params.list_id, params.task_id, updates)
   return result
     .mapLeft((error) => new UserError(`Failed to update task: ${error.message}`))
-    .map((t) => `Task updated.\n\n${formatTodoTaskDetail(t)}`)
+    .map((t) => `${describeUpdate(params.status, t)}\n\n${formatTodoTaskDetail(t)}`)
+}
+
+/**
+ * Completing a recurring task looks like a no-op in the response: Graph rolls the
+ * same task id forward to the next due date and hands it back as notStarted, while
+ * the completed occurrence becomes a separate task with a new id. Without a word of
+ * explanation the caller sees "Task updated" over a notStarted task and reasonably
+ * concludes the completion failed.
+ */
+const describeUpdate = (requestedStatus: string | undefined, task: GraphTodoTask): string => {
+  if (requestedStatus !== "completed") return "Task updated."
+  if (task.status === "completed") return "Task completed."
+  if (!task.recurrence) return "Task updated."
+
+  const next = Option(task.dueDateTime?.dateTime)
+    .map((d) => ` Next occurrence is due ${d.slice(0, 10)}.`)
+    .fold(
+      () => "",
+      (v) => v,
+    )
+  return `Occurrence completed, and the series rolled forward.${next} The completed occurrence is now a separate task; this id still refers to the live series.`
 }

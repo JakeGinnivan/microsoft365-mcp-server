@@ -13,7 +13,7 @@ A Model Context Protocol (MCP) server for Microsoft 365 — manage email, calend
 
 ## Features
 
-- **73 Tools** across 12 Microsoft 365 domains + generic Graph API escape hatch
+- **74 Tools** across 12 Microsoft 365 domains + generic Graph API escape hatch
 - **5 Auth Modes**: Interactive, certificate, client secret, client-provided token, OAuth proxy
 - **Draft Workflow**: Create drafts for user review in Outlook, then send when approved
 - **Tool Filtering**: Presets, regex patterns, read-only mode, and org-mode gating
@@ -454,7 +454,7 @@ Requires opt-in scopes that are **not** requested by default — see [Meeting tr
 > constrained HTML subset and silently drops unsupported CSS/tags, so a page can post
 > successfully yet render differently than the source.
 
-### To Do (4 tools)
+### To Do (5 tools)
 
 | Tool               | Description                         |
 | ------------------ | ----------------------------------- |
@@ -462,6 +462,7 @@ Requires opt-in scopes that are **not** requested by default — see [Meeting tr
 | `list_todo_tasks`  | List tasks in a list                |
 | `create_todo_task` | Create a task, optionally repeating |
 | `update_todo_task` | Update a task, or change its repeat |
+| `delete_todo_task` | Delete a task permanently           |
 
 `create_todo_task` and `update_todo_task` take an optional `recurrence`, mapping to
 Graph's `patternedRecurrence`. Pass a `pattern` of `daily`, `weekly`,
@@ -473,6 +474,17 @@ The repeat runs forever unless `range_type` is `endDate` or `numbered`. A recurr
 task needs a `due_date`: To Do rolls the task forward from it, so without one the
 task repeats but never appears in Today. Pass `clear_recurrence` on an update to
 make a repeating task one-off again.
+
+**Completing a recurring task does not mark that task completed.** Graph rolls the
+same task id forward to the next due date and returns it as `notStarted`, while the
+completed occurrence becomes a _separate_ task with a new id. The task id you hold
+therefore refers to the live series, not one occurrence, and `update_todo_task` says
+so in its result rather than reporting a bare "Task updated" over a `notStarted` task.
+
+`delete_todo_task` is permanent — To Do has no recycle bin and Graph offers no
+restore. Because an id addresses the series, deleting a repeating task ends the whole
+series; that requires `force: true`, and the refusal points at `clear_recurrence` for
+the usual case of wanting the task to stop repeating without losing it.
 
 ### Auth & Utility (5 tools)
 
