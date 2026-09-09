@@ -158,11 +158,22 @@ describe("cross-mailbox refs", () => {
     expect(mockClient.getMessage).toHaveBeenCalledWith("m1", undefined, BEL_PREFIX)
   })
 
+  // The row-per-failure reporting is the point: the caller learns which ref was stale. When that
+  // stale ref is the ONLY message in the batch, nothing moved, and the call now reports Left —
+  // a batch where no message moved is a failure, not a success carrying bad news in its text.
   it("reports a stale ref in a batch move as one failed row, not a failed batch", async () => {
-    const result = await batchMoveMessages({ message_ids: ["999"], destination: "archive" })
+    const result = await batchMoveMessages({ message_ids: ["999", "m1"], destination: "archive" })
 
     expect(result.isRight()).toBe(true)
     expect(result.value as string).toContain("FAILED")
+    expect(mockClient.moveMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it("fails the batch when the only message was a stale ref, since nothing moved", async () => {
+    const result = await batchMoveMessages({ message_ids: ["999"], destination: "archive" })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain("FAILED")
     expect(mockClient.moveMessage).not.toHaveBeenCalled()
   })
 })

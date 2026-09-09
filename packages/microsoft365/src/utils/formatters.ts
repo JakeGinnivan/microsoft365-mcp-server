@@ -1,3 +1,4 @@
+import { formatBytes } from "@sapientsai/ms-graph-core"
 import { Option } from "functype"
 
 import type {
@@ -38,13 +39,6 @@ export const formatMessageSummary = (msg: GraphMessage): string => {
   return `- **${msg.subject ?? "(No Subject)"}** from ${from} (${msg.receivedDateTime ?? ""})${read}${attachments} (ID: ${msg.id})`
 }
 
-const formatBytes = (bytes?: number): string => {
-  if (bytes === undefined) return "unknown size"
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 const REFERENCE_ATTACHMENT = "#microsoft.graph.referenceAttachment"
 const ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"
 
@@ -65,18 +59,35 @@ const formatReferenceAttachment = (att: GraphAttachment): string => {
 
 // The read_document path is included per attachment on purpose: it is the only way to get at the
 // content, and deriving it by hand is easy to get wrong (the trailing /$value is required).
+//
+// It is only emitted for attachments that actually have bytes in the mailbox. read_document reads
+// the /$value stream, which only a fileAttachment serves. An itemAttachment is an embedded Outlook
+// item, reachable as MIME but not as a document. Printing the path for either promises content that
+// endpoint cannot return, and a caller that follows it gets an opaque failure instead of "there is
+// nothing here to read".
+//
+// Graph returns @odata.type on every attachment whether or not it is $select-ed, so this costs
+// nothing extra. An unrecognised type still gets the path — better to offer a read that might work
+// than to hide a file attachment behind a type name we have not seen before.
 export const formatAttachmentSummary = (messageId: string, att: GraphAttachment): string => {
   if (att["@odata.type"] === REFERENCE_ATTACHMENT) return formatReferenceAttachment(att)
 
   const inline = att.isInline ? " [inline]" : ""
   const type = att.contentType ?? "unknown type"
-  // An itemAttachment is an embedded Outlook item (a forwarded message, contact or event). Its bytes
-  // are reachable, but as MIME or as an expanded item rather than a document.
-  const item = att["@odata.type"] === ITEM_ATTACHMENT ? " [embedded Outlook item]" : ""
-  return [
-    `- **${att.name ?? "(unnamed)"}** (${type}, ${formatBytes(att.size)})${inline}${item}`,
-    `  read_document path: /me/messages/${messageId}/attachments/${att.id}/$value`,
-  ].join("\n")
+  const size = Option(att.size)
+    .map(formatBytes)
+    .fold(
+      () => "unknown size",
+      (v) => v,
+    )
+  const header = `- **${att.name ?? "(unnamed)"}** (${type}, ${size})${inline}`
+
+  switch (att["@odata.type"]) {
+    case ITEM_ATTACHMENT:
+      return `${header}\n  embedded Outlook item — not readable with read_document`
+    default:
+      return `${header}\n  read_document path: /me/messages/${messageId}/attachments/${att.id}/$value`
+  }
 }
 
 export const formatAttachmentList = (messageId: string, attachments: ReadonlyArray<GraphAttachment>): string =>
@@ -89,13 +100,20 @@ export const formatMessageList = (messages: ReadonlyArray<GraphMessage>): string
 
 export const formatMailFolderSummary = (folder: GraphMailFolder): string => {
   const counts = `${folder.totalItemCount ?? 0} items, ${folder.unreadItemCount ?? 0} unread`
-  return `- **${folder.displayName ?? "(Unnamed)"}** (${counts}) (ID: ${folder.id})`
+  // Graph's /me/mailFolders returns immediate children of the root only, so a folder's own
+  // subfolders are absent from this listing. Printing the count is what makes them discoverable —
+  // otherwise a caller sees "Inbox" and has no way to learn that Inbox/Clients exists at all.
+  const children = (folder.childFolderCount ?? 0) > 0 ? `, ${folder.childFolderCount} subfolders` : ""
+  return `- **${folder.displayName ?? "(Unnamed)"}** (${counts}${children}) (ID: ${folder.id})`
 }
 
 export const formatMailFolderList = (folders: ReadonlyArray<GraphMailFolder>): string =>
   folders.length === 0
     ? "No mail folders found."
-    : `# Mail Folders\n\n${folders.map(formatMailFolderSummary).join("\n")}`
+    : `# Mail Folders\n\n${folders.map(formatMailFolderSummary).join("\n")}\n\n` +
+      `Top-level folders only. A folder showing subfolders has children that are not listed here; ` +
+      `reach them with graph_query on /me/mailFolders/{id}/childFolders, then pass the subfolder's ` +
+      `ID to move_message.`
 
 export const formatMessageDetail = (msg: GraphMessage): string => {
   const from = Option(msg.from?.emailAddress)
@@ -316,7 +334,7 @@ ${phones}`
 export const formatDriveItemSummary = (item: GraphDriveItem): string => {
   const type = item.folder ? `Folder (${item.folder.childCount ?? 0} items)` : (item.file?.mimeType ?? "File")
   const size = Option(item.size)
-    .map((s) => ` (${formatFileSize(s)})`)
+    .map((s) => ` (${formatBytes(s)})`)
     .fold(
       () => "",
       (v) => v,
@@ -340,18 +358,11 @@ export const formatDriveItemDetail = (item: GraphDriveItem): string => {
 ## Details
 - ID: ${item.id}
 - Type: ${item.folder ? "Folder" : "File"}
-- Size: ${formatFileSize(item.size ?? 0)}
+- Size: ${formatBytes(item.size ?? 0)}
 - MIME Type: ${item.file?.mimeType ?? "N/A"}
 - Last Modified: ${item.lastModifiedDateTime ?? ""}
 - Modified By: ${item.lastModifiedBy?.user?.displayName ?? "Unknown"}
 - Web URL: ${item.webUrl ?? ""}${downloadUrl}`
-}
-
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return "0 B"
-  const units = ["B", "KB", "MB", "GB"]
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
 // Teams

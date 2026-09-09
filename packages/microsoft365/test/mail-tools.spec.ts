@@ -392,7 +392,7 @@ describe("mail-tools", () => {
         Right({ id: "new-id", subject: "Receipt", body: { content: "a very long message body" } }),
       )
       const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
-      expect(result.value).toBe('Moved "Receipt" to archive. New ID: new-id')
+      expect(result.value).toBe('Moved "Receipt" to the archive folder. New ID: new-id')
       expect(result.value).not.toContain("a very long message body")
     })
 
@@ -754,5 +754,177 @@ describe("orderedFilter", () => {
     const [odata] = mockClient.listMessages.mock.calls[0]!
     expect(odata.$filter).toBe("receivedDateTime ge 1900-01-01T00:00:00Z and (hasAttachments eq true)")
     expect(odata.$orderby).toBe("receivedDateTime desc")
+  })
+})
+
+describe("listMailFolders subfolder reporting", () => {
+  it("should surface subfolders that the listing cannot show", async () => {
+    mockClient.listMailFolders.mockResolvedValue(
+      Right({ value: [{ id: "f1", displayName: "Inbox", totalItemCount: 40, childFolderCount: 2 }] }),
+    )
+    const result = await listMailFolders()
+    expect(result.value).toContain("2 subfolders")
+    expect(result.value).toContain("Top-level folders only")
+  })
+
+  it("should not mention subfolders for a folder that has none", async () => {
+    mockClient.listMailFolders.mockResolvedValue(
+      Right({ value: [{ id: "f2", displayName: "Archive", totalItemCount: 5, childFolderCount: 0 }] }),
+    )
+    const result = await listMailFolders()
+    expect(result.value).not.toContain("subfolders)")
+  })
+})
+
+describe("moveMessage destination reporting", () => {
+  it("should name the well-known folder it resolved, not what the caller typed", async () => {
+    mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id", subject: "Newsletter" }))
+    const result = await moveMessage({ message_id: "msg-1", destination: "junk" })
+    expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "junkemail", "/me")
+    expect(result.value).toBe('Moved "Newsletter" to the junkemail folder. New ID: new-id')
+  })
+
+  it("should name the matched folder when resolving a display name", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-receipts", displayName: "Receipts" }] }))
+    mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id", subject: "Invoice" }))
+    const result = await moveMessage({ message_id: "msg-1", destination: "receipts" })
+    expect(mockClient.moveMessage).toHaveBeenCalledWith("msg-1", "f-receipts", "/me")
+    expect(result.value).toBe('Moved "Invoice" to "Receipts". New ID: new-id')
+  })
+
+  it("should say it fell through to a folder ID rather than implying a name match", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Archive" }] }))
+    mockClient.moveMessage.mockResolvedValue(Right({ id: "new-id", subject: "Contract" }))
+    const result = await moveMessage({ message_id: "msg-1", destination: "AAMkAGI0-opaque" })
+    expect(result.value).toBe('Moved "Contract" to folder ID AAMkAGI0-opaque. New ID: new-id')
+  })
+
+  it("should explain a typo'd folder name once Graph rejects it", async () => {
+    const { Left: L } = await import("functype/either")
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Receipts" }] }))
+    mockClient.moveMessage.mockResolvedValue(L({ message: "The specified object was not found in the store." }))
+    const result = await moveMessage({ message_id: "msg-1", destination: "Reciepts" })
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain('No top-level folder is named "Reciepts"')
+    expect((result.value as Error).message).toContain("list_mail_folders")
+  })
+
+  it("should not blame the folder name when a well-known move fails", async () => {
+    const { Left: L } = await import("functype/either")
+    mockClient.moveMessage.mockResolvedValue(L({ message: "Mailbox is unavailable." }))
+    const result = await moveMessage({ message_id: "msg-1", destination: "archive" })
+    expect((result.value as Error).message).toBe("Failed to move message: Mailbox is unavailable.")
+  })
+})
+
+describe("listAttachments read_document paths", () => {
+  it("should not offer a read_document path for a cloud link", async () => {
+    mockClient.listAttachments.mockResolvedValue(
+      Right({
+        value: [
+          {
+            id: "att-3",
+            name: "Renovation invoices",
+            "@odata.type": "#microsoft.graph.referenceAttachment",
+          },
+        ],
+      }),
+    )
+    const result = await listAttachments({ message_id: "msg-1" })
+    expect(result.value).toContain("Renovation invoices")
+    // Our wording is "cloud file link" / "cloud folder link" — it names the kind as well.
+    expect(result.value).toMatch(/cloud (file|folder) link/)
+    expect(result.value).not.toContain("read_document path")
+  })
+
+  it("should not offer a read_document path for an embedded Outlook item", async () => {
+    mockClient.listAttachments.mockResolvedValue(
+      Right({
+        value: [{ id: "att-4", name: "Fwd: contract", "@odata.type": "#microsoft.graph.itemAttachment" }],
+      }),
+    )
+    const result = await listAttachments({ message_id: "msg-1" })
+    expect(result.value).toContain("embedded Outlook item")
+    expect(result.value).not.toContain("read_document path")
+  })
+
+  it("should still offer the path for a file attachment", async () => {
+    mockClient.listAttachments.mockResolvedValue(
+      Right({
+        value: [
+          {
+            id: "att-5",
+            name: "scan.pdf",
+            contentType: "application/pdf",
+            size: 2048,
+            "@odata.type": "#microsoft.graph.fileAttachment",
+          },
+        ],
+      }),
+    )
+    const result = await listAttachments({ message_id: "msg-1" })
+    expect(result.value).toContain("/me/messages/msg-1/attachments/att-5/$value")
+  })
+
+  it("should report an unknown size rather than claiming zero bytes", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ id: "att-6", name: "mystery.bin" }] }))
+    const result = await listAttachments({ message_id: "msg-1" })
+    expect(result.value).toContain("unknown size")
+  })
+})
+
+describe("batchMoveMessages failure reporting", () => {
+  it("should fail the call when no message moved at all", async () => {
+    const { Left: L } = await import("functype/either")
+    mockClient.moveMessage.mockResolvedValue(L({ type: "api", message: "boom" }))
+    const result = await batchMoveMessages({ message_ids: ["a", "b"], destination: "archive" })
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain("Moved 0/2")
+  })
+
+  it("should still succeed when some moved, since the caller needs that list", async () => {
+    const { Left: L } = await import("functype/either")
+    mockClient.moveMessage
+      .mockResolvedValueOnce(Right({ id: "n1", subject: "ok" }))
+      .mockResolvedValueOnce(L({ type: "api", message: "boom" }))
+    const result = await batchMoveMessages({ message_ids: ["a", "b"], destination: "archive" })
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toContain("Moved 1/2")
+  })
+
+  it("should stop at the first throttle instead of burning the rest of the batch", async () => {
+    const { Left: L } = await import("functype/either")
+    mockClient.moveMessage
+      .mockResolvedValueOnce(Right({ id: "n1", subject: "ok" }))
+      .mockResolvedValueOnce(L({ type: "throttle", message: "Too many requests", status: 429 }))
+    const result = await batchMoveMessages({ message_ids: ["a", "b", "c", "d"], destination: "archive" })
+    // Two calls attempted: the success, then the throttle. c and d are never tried.
+    expect(mockClient.moveMessage).toHaveBeenCalledTimes(2)
+    expect(result.value).toContain("Moved 1/4")
+    // The throttled message failed; the two after it were never sent. Counting all three as
+    // failures would overstate the damage and hide that c and d are still safe to retry.
+    expect(result.value).toContain("1 failed:")
+    expect(result.value).toContain("2 not attempted:")
+    expect(result.value).toContain("NOT ATTEMPTED c")
+    expect(result.value).toContain("NOT ATTEMPTED d")
+  })
+
+  it("should name a destination that was only assumed to be a folder ID", async () => {
+    mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f1", displayName: "Receipts" }] }))
+    mockClient.moveMessage.mockResolvedValue(Right({ id: "n", subject: "s" }))
+    const ok = await batchMoveMessages({ message_ids: ["a"], destination: "Receipts" })
+    expect(ok.value).not.toContain("used as a folder ID")
+
+    const { Left: L } = await import("functype/either")
+    mockClient.moveMessage.mockResolvedValue(L({ type: "api", message: "not found in store" }))
+    const bad = await batchMoveMessages({ message_ids: ["a"], destination: "Reciepts" })
+    expect((bad.value as Error).message).toContain('No top-level folder is named "Reciepts"')
+  })
+
+  it("should report the resolved folder in the summary, not what was typed", async () => {
+    mockClient.moveMessage.mockResolvedValue(Right({ id: "n", subject: "s" }))
+    const result = await batchMoveMessages({ message_ids: ["a"], destination: "junk" })
+    expect(mockClient.moveMessage).toHaveBeenCalledWith("a", "junkemail", "/me")
+    expect(result.value).toContain("to the junkemail folder")
   })
 })

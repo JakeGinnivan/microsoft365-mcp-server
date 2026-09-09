@@ -1,9 +1,9 @@
 import { type AuthStrategy, createGraphRequest } from "@sapientsai/ms-graph-core"
 import dotenv from "dotenv"
-import { createServer, getRequestHeader, type SomaServerInstance } from "somamcp"
+import { createServer, type SomaServerInstance } from "somamcp"
 import { z } from "zod"
 
-import { authorizesWithApiKey } from "./auth/api-key-gate"
+import { authorizesWithApiKey, presentedApiKey } from "./auth/api-key-gate"
 import { createAppOnlyAuthStrategy } from "./auth/app-only-strategy"
 import { resolveServerRuntimeConfig, type ServerRuntimeConfig } from "./config"
 import { buildAiSearchTool } from "./tools/ai-search"
@@ -19,6 +19,14 @@ dotenv.config({ quiet: true })
 declare const __VERSION__: string
 const VERSION = (typeof __VERSION__ !== "undefined" ? __VERSION__ : "0.0.0-dev") as `${number}.${number}.${number}`
 
+// The Dockerfiles have always set GIT_HASH as a container env, and nothing read it — so a
+// running container could name its version but not its build. Two deploys of one tag are
+// indistinguishable by version alone, and "which build is actually running" is precisely the
+// question asked when a deploy looks wrong. Answering it from the image digest works but costs
+// a round trip through the registry.
+const gitHash = process.env.GIT_HASH
+const BUILD = gitHash !== undefined && gitHash.length > 0 ? ` (${gitHash.slice(0, 7)})` : ""
+
 // App-only Microsoft Graph server on the somamcp shell: auth wired through core's
 // AuthStrategy, tools for the generic Graph passthrough, $batch, read_document extraction,
 // SharePoint/AI Search, and a protected /upload relay route (POST/PUT). The httpStream
@@ -30,16 +38,23 @@ export const buildServer = (config: ServerRuntimeConfig, auth: AuthStrategy): So
     name: "microsoft-mcp-server",
     version: VERSION,
     instructions: "Minimal app-only Microsoft Graph MCP server.",
+    // read_document on a multi-MB PDF is a long call that produces no output until it finishes,
+    // which is exactly what a proxy closes as idle. This writes onto that call's own response
+    // stream, and it is the only keepalive that works once httpStream is stateless — the
+    // transport-level ping needs a standing server-to-client stream, which stateless has none of.
+    // 20s sits comfortably under the shortest idle timeout we are likely to sit behind.
+    streamKeepalive: { enabled: true, intervalMs: 20_000 },
     ...(apiKey
       ? {
           // Shared gate for the httpStream transport AND the protected /upload route.
-          // getRequestHeader hides the http.IncomingMessage (transport) vs Hono Request
-          // (route) shape difference. FastMCP signals an HTTP rejection by throwing a
+          // presentedApiKey hides the http.IncomingMessage (transport) vs Hono Request
+          // (route) shape difference, and accepts the key from the Authorization header
+          // or an ?api_key= query parameter — clients that can only be handed a URL have
+          // no other way to send it. FastMCP signals an HTTP rejection by throwing a
           // Response; surface a 401 on a bad/missing key. Non-async (returns a Promise) to
           // satisfy the no-floating-await rule.
           authenticate: (request: unknown): Promise<{ apiKey: string }> => {
-            const bearer = getRequestHeader(request, "authorization")?.replace(/^Bearer\s+/i, "")
-            if (!authorizesWithApiKey(bearer, apiKey)) {
+            if (!authorizesWithApiKey(presentedApiKey(request), apiKey)) {
               return Promise.reject(new Response("Unauthorized", { status: 401 }))
             }
             return Promise.resolve({ apiKey })
@@ -97,11 +112,13 @@ export const main = async (): Promise<void> => {
   if (config.transport === "httpStream") {
     await server.start({
       transportType: "httpStream",
-      httpStream: { port: config.port, host: config.host, endpoint: "/mcp" },
+      httpStream: { port: config.port, host: config.host, endpoint: "/mcp", stateless: config.stateless },
     })
-    console.error(`[Server] microsoft-mcp-server v${VERSION} (app-only) on ${config.host}:${config.port}`)
+    console.error(
+      `[Server] microsoft-mcp-server v${VERSION}${BUILD} (app-only, ${config.stateless ? "stateless" : "stateful"}) on ${config.host}:${config.port}`,
+    )
   } else {
     await server.start({ transportType: "stdio" })
-    console.error(`[Server] microsoft-mcp-server v${VERSION} (app-only) on stdio`)
+    console.error(`[Server] microsoft-mcp-server v${VERSION}${BUILD} (app-only) on stdio`)
   }
 }

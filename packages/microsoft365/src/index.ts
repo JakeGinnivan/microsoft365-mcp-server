@@ -21,7 +21,7 @@ import { withToken } from "./auth/token-context"
 import { initializeGraphClient } from "./client/graph-client"
 import { toolDefinitions } from "./tools/definitions"
 import type { ToolDefinition } from "./tools/tool-definitions"
-import { filterTools, type ToolFilterConfig } from "./tools/tool-registry"
+import { DOMAIN_DESCRIPTIONS, filterTools, type ToolFilterConfig } from "./tools/tool-registry"
 import type { AuthConfig } from "./types"
 import { resolveUploadAccessToken } from "./upload/upload-auth"
 import { auditToolCall, auditToolError, auditToolResult } from "./utils/audit"
@@ -30,6 +30,14 @@ dotenv.config({ quiet: true })
 
 declare const __VERSION__: string
 const VERSION = (typeof __VERSION__ !== "undefined" ? __VERSION__ : "0.0.0-dev") as `${number}.${number}.${number}`
+
+// The Dockerfiles have always set GIT_HASH as a container env, and nothing read it — so a
+// running container could name its version but not its build. Two deploys of one tag are
+// indistinguishable by version alone, and "which build is actually running" is precisely the
+// question asked when a deploy looks wrong. Answering it from the image digest works but costs
+// a round trip through the registry.
+const gitHash = process.env.GIT_HASH
+const BUILD = gitHash !== undefined && gitHash.length > 0 ? ` (${gitHash.slice(0, 7)})` : ""
 
 const resolveAuthConfig = (): AuthConfig => {
   const mode = process.env.MS365_AUTH_MODE ?? "interactive"
@@ -176,29 +184,12 @@ const buildUploadWorkflow = (allowedTools: Set<string>): string => {
 
 const buildInstructions = (allowedTools: Set<string>): string => {
   const domains = new Set(toolDefinitions.filter((t) => allowedTools.has(t.name)).map((t) => t.domain))
-  const domainDescriptions: Record<string, string> = {
-    auth: "Authentication: Check auth status and manage tokens",
-    mail: "Mail: List, read, send, reply, search, and draft email messages",
-    calendar: "Calendar: List, view, create, update, and delete events",
-    contacts: "Contacts: List, view, create, and search contacts",
-    files:
-      "Files: List, view, search, download OneDrive files; create folders; upload files (see Upload workflows below)",
-    chats: "Chats: List Teams chats and messages; send chat messages",
-    teams: "Teams: List teams, channels, and messages; send channel messages",
-    meetings: "Meetings: List Teams meeting transcripts and read their text",
-    users: "Users: View profiles and list users",
-    groups: "Groups: List groups and group members",
-    planner: "Planner: List plans and tasks; create and update tasks",
-    onenote: "OneNote: List notebooks, sections, pages; read page content",
-    todo: "To Do: List task lists and tasks; create and update tasks",
-    query: "Graph Query: Execute arbitrary Microsoft Graph API queries",
-  }
 
-  const capabilities = [...domains]
-    .map((d) => domainDescriptions[d])
-    .filter(Boolean)
-    .map((desc) => `- ${desc}`)
-    .join("\n")
+  // No filter(Boolean) and no cast. ToolDefinition.domain is already ToolDomain, and
+  // DOMAIN_DESCRIPTIONS is Record<ToolDomain, string>, so the index cannot miss: every domain is
+  // guaranteed a line at compile time. Filtering could only hide a gap that no longer exists,
+  // which is exactly how `rag` went unadvertised; a cast would imply a type gap that is not there.
+  const capabilities = [...domains].map((d) => `- ${DOMAIN_DESCRIPTIONS[d]}`).join("\n")
 
   const uploadSection = domains.has("files") ? buildUploadWorkflow(allowedTools) : ""
 
@@ -300,6 +291,18 @@ const mountUploadRoute = (server: FastMCP, oauthMode: boolean): void => {
 }
 
 // === Server Startup ===
+// Stateless by default. This server consumes no server->client features (no roots,
+// sampling, elicitation or progress anywhere in the package), and its OAuth tokens are
+// keyed by bearer + TOKEN_STORAGE_PATH rather than by MCP session, so per-session
+// transport state buys nothing and dies with the container on every redeploy.
+// Opt out with MCP_STATELESS=false.
+const statelessTransport = (): boolean => process.env.MCP_STATELESS?.trim().toLowerCase() !== "false"
+
+// The only keepalive that works stateless: with no standing server-to-client stream, an
+// in-flight tool call's own stream is the sole route, and a long silent call (a large
+// read_document) can otherwise be closed as idle by a proxy.
+const STREAM_KEEPALIVE = { enabled: true } as const
+
 const main = async () => {
   const authConfig = resolveAuthConfig()
   const oauthMode = authConfig.mode === "oauth-proxy"
@@ -323,6 +326,7 @@ const main = async () => {
     })
 
     const server = new FastMCP({
+      streamKeepalive: STREAM_KEEPALIVE,
       name: "microsoft365-mcp-server",
       version: VERSION,
       instructions: buildInstructions(allowedTools),
@@ -338,13 +342,14 @@ const main = async () => {
 
     const port = parseInt(process.env.PORT ?? "3000", 10)
     const host = process.env.HOST ?? process.env.FASTMCP_HOST ?? "127.0.0.1"
-    await server.start({ transportType: "httpStream", httpStream: { port, host } })
-    console.error(`[Server] MS 365 MCP Server v${VERSION} (OAuth proxy) running on ${host}:${port}`)
+    await server.start({ transportType: "httpStream", httpStream: { port, host, stateless: statelessTransport() } })
+    console.error(`[Server] MS 365 MCP Server v${VERSION}${BUILD} (OAuth proxy) running on ${host}:${port}`)
   } else {
     // Standard mode: credential-based auth
     await setupAuth()
 
     const server = new FastMCP({
+      streamKeepalive: STREAM_KEEPALIVE,
       name: "microsoft365-mcp-server",
       version: VERSION,
       instructions: buildInstructions(allowedTools),
@@ -359,11 +364,11 @@ const main = async () => {
       mountUploadRoute(server, false)
       const port = parseInt(process.env.PORT ?? "3000", 10)
       const host = process.env.HOST ?? process.env.FASTMCP_HOST ?? "127.0.0.1"
-      await server.start({ transportType: "httpStream", httpStream: { port, host } })
-      console.error(`[Server] MS 365 MCP Server v${VERSION} running on ${host}:${port}`)
+      await server.start({ transportType: "httpStream", httpStream: { port, host, stateless: statelessTransport() } })
+      console.error(`[Server] MS 365 MCP Server v${VERSION}${BUILD} running on ${host}:${port}`)
     } else {
       await server.start({ transportType: "stdio" })
-      console.error(`[Server] MS 365 MCP Server v${VERSION} running on stdio`)
+      console.error(`[Server] MS 365 MCP Server v${VERSION}${BUILD} running on stdio`)
     }
   }
 }

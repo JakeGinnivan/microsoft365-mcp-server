@@ -140,14 +140,26 @@ const WELL_KNOWN_FOLDERS: ReadonlyMap<string, string> = new Map([
   ["sent items", "sentitems"],
 ])
 
+// What the caller typed is not what the message ends up in. "junk" is a well-known alias AND a
+// legal display name for a custom folder, and the alias wins — so a mailbox with a folder named
+// "Junk" files the message into Junk Email instead, which is a different folder. Carrying a label
+// alongside the id lets the confirmation say which branch actually fired, rather than echoing the
+// input back and leaving the caller to assume.
+//
+// assumedId records that no name matched and we handed the caller's string to Graph as an ID. It
+// only changes the message on failure, so it costs nothing and guesses nothing: a typo'd folder
+// name and a genuine folder ID are indistinguishable up front, but once Graph has rejected it we
+// know which explanation to give.
+type ResolvedFolder = { readonly id: string; readonly label: string; readonly assumedId: boolean }
+
 const resolveDestination = async (
   client: NonNullable<ReturnType<typeof requireClient>>,
   destination: string,
   scope: MailboxScope,
-): Promise<Either<UserError, string>> => {
+): Promise<Either<UserError, ResolvedFolder>> => {
   const normalized = destination.trim().toLowerCase()
   const wellKnown = WELL_KNOWN_FOLDERS.get(normalized)
-  if (wellKnown) return Right(wellKnown)
+  if (wellKnown) return Right({ id: wellKnown, label: `the ${wellKnown} folder`, assumedId: false })
 
   // Otherwise treat it as a folder display name and look it up — in the mailbox being
   // addressed, not the signed-in user's. Folder IDs are per-mailbox, so resolving a
@@ -155,18 +167,23 @@ const resolveDestination = async (
   const result = await client.listMailFolders({ $top: 100 }, scope.prefix)
   return result
     .mapLeft((error) => new UserError(`Failed to resolve destination folder: ${error.message}`))
-    .flatMap((response) => {
+    .flatMap((response): Either<UserError, ResolvedFolder> => {
       const folders = (response as ODataResponse<GraphMailFolder>).value
       const matches = folders.filter((f) => f.displayName?.toLowerCase() === normalized)
-      if (matches.length === 1) return Right(matches[0]!.id)
       if (matches.length > 1)
         return Left(
           new UserError(
             `Multiple folders named "${destination}". Pass the folder ID instead: ${matches.map((f) => f.id).join(", ")}`,
           ),
         )
-      // No name matched — assume the caller passed a real folder ID and let Graph judge.
-      return Right(destination)
+      if (matches.length === 1) {
+        const match = matches[0]!
+        return Right({ id: match.id, label: `"${match.displayName}"`, assumedId: false })
+      }
+      // No name matched — assume the caller passed a real folder ID and let Graph judge. Note that
+      // listMailFolders only sees top-level folders, so a subfolder never matches by name and
+      // always lands here; passing its ID is the supported route.
+      return Right({ id: destination, label: `folder ID ${destination}`, assumedId: true })
     })
 }
 
@@ -183,22 +200,44 @@ export const moveMessage = async (params: {
   if (messageId.isLeft()) return messageId as Either<UserError, string>
 
   const destination = await resolveDestination(client, params.destination, scope)
-  if (destination.isLeft()) return destination
+  if (destination.isLeft()) return Left(destination.value as UserError)
 
-  const result = await client.moveMessage(messageId.orThrow(), destination.orThrow(), scope.prefix)
+  const target = destination.orThrow()
+
+  const result = await client.moveMessage(messageId.orThrow(), target.id, scope.prefix)
   // Deliberately terse: triage moves messages in batches, and echoing each message body
   // back (formatMessageDetail) floods an LLM caller's context with mail the caller has
   // already decided to file. Subject and destination are enough to confirm the move.
+  //
+  // The label, not params.destination: the caller needs to see where the message actually
+  // went when the two differ.
   return result
-    .mapLeft((error) => new UserError(`Failed to move message: ${error.message}`))
-    .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${params.destination}. New ID: ${msg.id}`)
+    .mapLeft((error) =>
+      target.assumedId
+        ? new UserError(
+            `No top-level folder is named "${params.destination}", and Graph rejected it as a folder ID: ` +
+              `${error.message}. Check list_mail_folders for the name, or pass a subfolder's ID.`,
+          )
+        : new UserError(`Failed to move message: ${error.message}`),
+    )
+    .map((msg) => `Moved "${msg.subject ?? "(No Subject)"}" to ${target.label}. New ID: ${msg.id}`)
 }
 
 // Graph has no bulk-move endpoint, so this is still one request per message — but it
 // resolves the destination once instead of per message, and returns a single summary
 // rather than N tool results. Filing an inbox means dozens of moves; at one call each
 // the round-trips and the echoed confirmations dominate.
-type MoveOutcome = { readonly id: string; readonly subject?: string; readonly error?: string }
+type MoveOutcome = {
+  readonly id: string
+  readonly subject?: string
+  readonly error?: string
+  // Graph throttles per mailbox, so a 429 on one message predicts a 429 on the next.
+  readonly throttled?: boolean
+  // Never sent, because an earlier message was throttled. Distinct from a failure: nothing was
+  // attempted, so retrying it is the obvious next move and counting it as "failed" would overstate
+  // the damage.
+  readonly skipped?: boolean
+}
 
 const BATCH_MOVE_LIMIT = 50
 
@@ -221,8 +260,8 @@ export const batchMoveMessages = async (params: {
   }
 
   const destination = await resolveDestination(client, params.destination, scope)
-  if (destination.isLeft()) return destination
-  const destinationId = destination.orThrow()
+  if (destination.isLeft()) return Left(destination.value as UserError)
+  const target = destination.orThrow()
 
   // Sequential on purpose: Graph throttles per-mailbox, and a 429 midway through a
   // parallel batch leaves the caller unsure which moves actually landed. Reducing over
@@ -233,27 +272,54 @@ export const batchMoveMessages = async (params: {
     // filing dozens of messages should not be lost to one stale ref.
     if (resolved.kind !== "id") return { id: idOrRef, error: describeRefFailure(resolved, scope.mailbox) }
 
-    const result = await client.moveMessage(resolved.id, destinationId, scope.prefix)
+    const result = await client.moveMessage(resolved.id, target.id, scope.prefix)
     return result.fold<MoveOutcome>(
-      (error) => ({ id: idOrRef, error: (error as { message: string }).message }),
+      (error) => ({
+        id: idOrRef,
+        error: (error as { message: string }).message,
+        throttled: (error as { type?: string }).type === "throttle",
+      }),
       (msg) => ({ id: idOrRef, subject: (msg as GraphMessage).subject }),
     )
   }
 
-  const outcomes = await params.message_ids.reduce<Promise<ReadonlyArray<MoveOutcome>>>(
-    async (acc, id) => [...(await acc), await moveOne(id)],
-    Promise.resolve([]),
-  )
+  const outcomes = await params.message_ids.reduce<Promise<ReadonlyArray<MoveOutcome>>>(async (acc, id) => {
+    const done = await acc
+    // Stop at the first throttle. Graph throttles per mailbox, so message N+1 is throttled too:
+    // carrying on spends the rest of the batch on calls that cannot succeed and buries the one
+    // real cause under 40-odd identical failures. Say what was skipped rather than pretending it
+    // was tried.
+    if (done.some((o) => o.throttled))
+      return [...done, { id, error: "the batch stopped after Graph throttled it", skipped: true }]
+    return [...done, await moveOne(id)]
+  }, Promise.resolve([]))
 
-  const moved = outcomes.filter((o) => !o.error)
-  const failed = outcomes.filter((o) => o.error)
+  const moved = outcomes.filter((o) => o.error === undefined)
+  const failed = outcomes.filter((o) => o.error !== undefined && o.skipped !== true)
+  const skipped = outcomes.filter((o) => o.skipped === true)
 
   // Report failures individually — a silent partial success is the worst outcome here,
-  // since the caller believes the inbox is filed when some of it is not.
+  // since the caller believes the inbox is filed when some of it is not. Skipped messages are
+  // listed apart from failures: they were never sent, so they are still safe to retry, and folding
+  // them into the failure count would report more damage than actually happened.
   const failureLines = failed.map((f) => `- FAILED ${f.id}: ${f.error}`).join("\n")
-  const summary = `Moved ${moved.length}/${outcomes.length} message(s) to ${params.destination}.`
+  const skippedLines = skipped.map((sk) => `- NOT ATTEMPTED ${sk.id}`).join("\n")
+  const summary = `Moved ${moved.length}/${outcomes.length} message(s) to ${target.label}.`
+  // A destination that only Graph could judge is worth naming again here: the whole batch went to
+  // the same place, so if it was wrong, it was wrong for every message.
+  const hint = target.assumedId
+    ? `\n\nNo top-level folder is named "${params.destination}"; it was used as a folder ID.`
+    : ""
+  const detail = `${summary}${hint}${
+    failed.length > 0 ? `\n\n${failed.length} failed:\n${failureLines}` : ""
+  }${skipped.length > 0 ? `\n\n${skipped.length} not attempted:\n${skippedLines}` : ""}`
 
-  return failed.length === 0 ? Right(summary) : Right(`${summary}\n\n${failed.length} failed:\n${failureLines}`)
+  if (failed.length === 0 && skipped.length === 0) return Right(summary)
+  // A batch where nothing moved is a failure, not a success carrying bad news. Returning Right
+  // leaves MCP's isError unset, so the caller sees a success-shaped result with the failures buried
+  // in the text — and an LLM triaging a mailbox reports it as filed when none of it was.
+  // A partial success stays Right: some messages really did move, and the caller needs that list.
+  return moved.length === 0 ? Left(new UserError(detail)) : Right(detail)
 }
 
 export const listAttachments = async (params: {
@@ -549,8 +615,8 @@ export const scanMessages = async (params: {
   }
 
   const resolvedFolder = params.folder ? await resolveDestination(client, params.folder, scope) : undefined
-  if (resolvedFolder?.isLeft()) return resolvedFolder as Either<UserError, string>
-  const folderId = resolvedFolder?.orThrow()
+  if (resolvedFolder?.isLeft()) return Left(resolvedFolder.value as UserError)
+  const folderId = resolvedFolder?.orThrow().id
 
   const result = folderId
     ? await client.listFolderMessages(folderId, odataParams, scope.prefix)
@@ -599,8 +665,8 @@ const fetchFolderMessages = async (
   filter: string | undefined,
 ): Promise<Either<UserError, { readonly folderId: string; readonly messages: ReadonlyArray<GraphMessage> }>> => {
   const resolvedFolder = await resolveDestination(client, folder, scope)
-  if (resolvedFolder.isLeft()) return resolvedFolder as Either<UserError, never>
-  const folderId = resolvedFolder.orThrow()
+  if (resolvedFolder.isLeft()) return Left(resolvedFolder.value as UserError)
+  const folderId = resolvedFolder.orThrow().id
 
   const result = await client.listFolderMessagesAll(
     folderId,
@@ -716,14 +782,14 @@ export const moveMessagesMatching = async (params: {
         : filter
 
   const destination = await resolveDestination(client, params.destination, scope)
-  if (destination.isLeft()) return destination
-  const destinationId = destination.orThrow()
+  if (destination.isLeft()) return Left(destination.value as UserError)
+  const target = destination.orThrow()
 
   const fetched = await fetchFolderMessages(client, scope, params.folder, combined)
   if (fetched.isLeft()) return Left(fetched.value as UserError)
   const { folderId, messages } = fetched.orThrow()
 
-  if (folderId === destinationId) {
+  if (folderId === target.id) {
     return Left(new UserError(`Destination "${params.destination}" is the folder being swept.`))
   }
 
@@ -747,7 +813,7 @@ export const moveMessagesMatching = async (params: {
   const outcome = await runMoveBatches(
     messages.map((m) => m.id),
     scope.prefix,
-    destinationId,
+    target.id,
     (requests) =>
       client.batchRequest(requests as ReadonlyArray<Record<string, unknown>>) as Promise<
         Either<never, GraphBatchResponse>
