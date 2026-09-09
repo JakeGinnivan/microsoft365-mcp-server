@@ -431,6 +431,12 @@ const createGraphClient = (auth: AuthStrategy) => {
   const updateTodoTask = (listId: string, taskId: string, task: Record<string, unknown>) =>
     request<GraphTodoTask>("PATCH", `/me/todo/lists/${listId}/tasks/${taskId}`, { body: task })
 
+  const getTodoTask = (listId: string, taskId: string) =>
+    request<GraphTodoTask>("GET", `/me/todo/lists/${listId}/tasks/${taskId}`)
+
+  const deleteTodoTask = (listId: string, taskId: string) =>
+    request<Record<string, never>>("DELETE", `/me/todo/lists/${listId}/tasks/${taskId}`)
+
   // Text-only file upload. Binary uploads must use get_upload_config (httpStream) or upload_file_from_path (stdio).
   const uploadFile = async (
     path: string,
@@ -590,6 +596,8 @@ const createGraphClient = (auth: AuthStrategy) => {
     listTodoTasks,
     createTodoTask,
     updateTodoTask,
+    getTodoTask,
+    deleteTodoTask,
     // Upload
     uploadFile,
     // Generic

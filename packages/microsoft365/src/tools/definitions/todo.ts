@@ -3,7 +3,7 @@
 import { z } from "zod"
 
 import { DAYS_OF_WEEK, RECURRENCE_PATTERN_TYPES, RECURRENCE_RANGE_TYPES, WEEK_INDEXES } from "../../utils/recurrence"
-import { createTodoTask, listTodoLists, listTodoTasks, updateTodoTask } from ".."
+import { createTodoTask, deleteTodoTask, listTodoLists, listTodoTasks, updateTodoTask } from ".."
 import type { ToolDefinition } from "../tool-definitions"
 import { FETCH_ALL_PAGES_PARAM, unwrapResult } from "./shared"
 
@@ -100,5 +100,24 @@ export const todoTools: ReadonlyArray<ToolDefinition> = [
     execute: async (params) => unwrapResult(await updateTodoTask(params)),
     domain: "todo",
     readOnly: false,
+  },
+  {
+    name: "delete_todo_task",
+    description: "Delete a To Do task permanently. To Do has no recycle bin — this cannot be undone",
+    parameters: z.object({
+      list_id: z.string().describe("To Do list ID"),
+      task_id: z.string().describe("Task ID"),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          "Required to delete a repeating task, which ends the whole series rather than one occurrence. " +
+            "To stop it repeating but keep the task, use clear_recurrence on update_todo_task instead.",
+        ),
+    }),
+    execute: async (params) => unwrapResult(await deleteTodoTask(params)),
+    domain: "todo",
+    readOnly: false,
+    annotations: { destructiveHint: true },
   },
 ]

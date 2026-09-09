@@ -185,6 +185,7 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "list_todo_tasks", domain: "todo", readOnly: true, orgOnly: false },
   { name: "create_todo_task", domain: "todo", readOnly: false, orgOnly: false },
   { name: "update_todo_task", domain: "todo", readOnly: false, orgOnly: false },
+  { name: "delete_todo_task", domain: "todo", readOnly: false, orgOnly: false },
   // Query
   { name: "graph_query", domain: "query", readOnly: false, orgOnly: false },
   // RAG
