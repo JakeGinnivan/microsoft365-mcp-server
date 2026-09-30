@@ -202,6 +202,7 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
     orgOnly: false,
   },
   { name: "search_contacts", title: "Search Contacts", domain: "contacts", readOnly: true, orgOnly: false },
+  { name: "export_contacts", title: "Export Contacts", domain: "contacts", readOnly: true, orgOnly: false },
   // Files
   { name: "list_drive_items", title: "List OneDrive Files", domain: "files", readOnly: true, orgOnly: false },
   { name: "get_drive_item", title: "Get OneDrive File Details", domain: "files", readOnly: true, orgOnly: false },

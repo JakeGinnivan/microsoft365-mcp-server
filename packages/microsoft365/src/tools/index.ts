@@ -10,7 +10,7 @@ export {
   updateEvent,
 } from "./calendar-tools"
 export { listChatMessages, listChats, sendChatMessage } from "./chat-tools"
-export { createContact, getContact, listContacts, searchContacts } from "./contacts-tools"
+export { createContact, exportContacts, getContact, listContacts, searchContacts } from "./contacts-tools"
 export {
   createFolder,
   downloadFile,
