@@ -42,6 +42,7 @@ import {
   deleteOnenotePage,
   deleteTodoTask,
   downloadFile,
+  exportContacts,
   findMeetingAvailability,
   getAuthStatusTool,
   getContact,
@@ -791,6 +792,20 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       top: z.number().optional().describe("Number of results (default: 25)"),
     }),
     execute: async (params) => unwrapResult(await searchContacts(params)),
+    domain: "contacts",
+    readOnly: true,
+  },
+  {
+    name: "export_contacts",
+    description:
+      "Export every contact in the signed-in mailbox to a local JSON file and return its path. Covers the " +
+      "default Contacts folder and every contact folder beneath it, with all fields (emails, phones, " +
+      "addresses, categories, birthday, notes, folder path). Use this to reconcile or bulk-process " +
+      "contacts; use list_contacts or search_contacts to look one up.",
+    parameters: z.object({
+      out_dir: z.string().optional().describe("Directory to write into (default: the system temp directory)"),
+    }),
+    execute: async (params) => unwrapResult(await exportContacts(params)),
     domain: "contacts",
     readOnly: true,
   },

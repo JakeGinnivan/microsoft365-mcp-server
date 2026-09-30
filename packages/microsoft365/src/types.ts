@@ -155,6 +155,12 @@ export type GraphContact = {
   readonly jobTitle?: string
 }
 
+export type GraphContactFolder = {
+  readonly id: string
+  readonly displayName?: string
+  readonly parentFolderId?: string
+}
+
 export type GraphSite = {
   readonly id: string
   readonly displayName?: string
