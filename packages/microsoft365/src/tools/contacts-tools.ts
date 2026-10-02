@@ -71,6 +71,65 @@ export const createContact = async (params: {
     .map((c) => `Contact created.\n\n${formatContactDetail(c)}`)
 }
 
+// Graph replaces a multi-valued property wholesale on PATCH — there is no append — so
+// list parameters are complete replacements, and an empty list clears the property.
+export const updateContact = async (params: {
+  contact_id: string
+  given_name?: string
+  surname?: string
+  nickname?: string
+  company_name?: string
+  job_title?: string
+  mobile_phone?: string
+  email_addresses?: ReadonlyArray<string>
+  business_phones?: ReadonlyArray<string>
+  home_phones?: ReadonlyArray<string>
+  categories?: ReadonlyArray<string>
+  personal_notes?: string
+}): Promise<Either<UserError, string>> => {
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  const updates: Record<string, unknown> = {}
+  if (params.given_name !== undefined) updates.givenName = params.given_name
+  if (params.surname !== undefined) updates.surname = params.surname
+  if (params.nickname !== undefined) updates.nickName = params.nickname
+  if (params.company_name !== undefined) updates.companyName = params.company_name
+  if (params.job_title !== undefined) updates.jobTitle = params.job_title
+  if (params.mobile_phone !== undefined) updates.mobilePhone = params.mobile_phone
+  if (params.email_addresses !== undefined) {
+    updates.emailAddresses = params.email_addresses.map((address) => ({ address }))
+  }
+  if (params.business_phones !== undefined) updates.businessPhones = params.business_phones
+  if (params.home_phones !== undefined) updates.homePhones = params.home_phones
+  if (params.categories !== undefined) updates.categories = params.categories
+  if (params.personal_notes !== undefined) updates.personalNotes = params.personal_notes
+
+  if (Object.keys(updates).length === 0) return Left(new UserError("No fields to update."))
+
+  const result = await client.updateContact(params.contact_id, updates)
+  return result
+    .mapLeft((error) => new UserError(`Failed to update contact: ${error.message}`))
+    .map((c) => `Contact updated.\n\n${formatContactDetail(c)}`)
+}
+
+export const deleteContact = async (params: { contact_id: string }): Promise<Either<UserError, string>> => {
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  // Read first so the caller is told what was removed, not just an ID that no longer resolves.
+  const existing = await client.getContact(params.contact_id)
+  if (existing.isLeft()) {
+    return Left(new UserError(`Failed to get contact: ${(existing.value as { message: string }).message}`))
+  }
+  const contact = existing.value as GraphContact
+
+  const result = await client.deleteContact(params.contact_id)
+  return result
+    .mapLeft((error) => new UserError(`Failed to delete contact: ${error.message}`))
+    .map(() => `Contact deleted: ${contact.displayName ?? params.contact_id}\n\n${formatContactDetail(contact)}`)
+}
+
 export const searchContacts = async (params: { query: string; top?: number }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))

@@ -153,6 +153,9 @@ export type GraphContact = {
   readonly mobilePhone?: string
   readonly companyName?: string
   readonly jobTitle?: string
+  readonly homePhones?: ReadonlyArray<string>
+  readonly categories?: ReadonlyArray<string>
+  readonly personalNotes?: string
 }
 
 export type GraphContactFolder = {

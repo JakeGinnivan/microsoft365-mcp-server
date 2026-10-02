@@ -37,6 +37,7 @@ import {
   createReplyAllDraft,
   createReplyDraft,
   createTodoTask,
+  deleteContact,
   deleteDraft,
   deleteEvent,
   deleteOnenotePage,
@@ -103,6 +104,7 @@ import {
   sendReplyAll,
   setAccessTokenTool,
   switchAccountTool,
+  updateContact,
   updateDraft,
   updateEvent,
   updateOnenotePageContent,
@@ -781,6 +783,43 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       job_title: z.string().optional().describe("Job title"),
     }),
     execute: async (params) => unwrapResult(await createContact(params)),
+    domain: "contacts",
+    readOnly: false,
+  },
+  {
+    name: "update_contact",
+    description:
+      "Update fields on an existing contact. Only the fields passed are changed. List fields " +
+      "(email_addresses, business_phones, home_phones, categories) REPLACE the whole list — read the " +
+      "contact first and pass the complete new list; an empty list clears it.",
+    parameters: z.object({
+      contact_id: z.string().describe("The contact ID"),
+      given_name: z.string().optional().describe("First name"),
+      surname: z.string().optional().describe("Last name"),
+      nickname: z.string().optional().describe("Nickname"),
+      company_name: z.string().optional().describe("Company name"),
+      job_title: z.string().optional().describe("Job title"),
+      mobile_phone: z.string().optional().describe("Mobile phone number"),
+      email_addresses: z.array(z.string()).optional().describe("Complete replacement list of email addresses"),
+      business_phones: z.array(z.string()).optional().describe("Complete replacement list of business phones"),
+      home_phones: z.array(z.string()).optional().describe("Complete replacement list of home phones"),
+      categories: z.array(z.string()).optional().describe("Complete replacement list of Outlook categories"),
+      personal_notes: z.string().optional().describe("Replaces the contact's notes"),
+    }),
+    execute: async (params) => unwrapResult(await updateContact(params)),
+    domain: "contacts",
+    readOnly: false,
+  },
+  {
+    name: "delete_contact",
+    description:
+      "Delete a contact. Intended for duplicates: first copy anything the duplicate holds that the kept " +
+      "contact lacks (emails, phones, notes, birthday) onto the kept contact with update_contact, then delete. " +
+      "Returns the deleted contact's details so they are not lost from the conversation.",
+    parameters: z.object({
+      contact_id: z.string().describe("The contact ID"),
+    }),
+    execute: async (params) => unwrapResult(await deleteContact(params)),
     domain: "contacts",
     readOnly: false,
   },
