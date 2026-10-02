@@ -9,9 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
 
 import { getGraphClient } from "../src/client/graph-client"
-import { exportContacts } from "../src/tools/contacts-tools"
+import { deleteContact, exportContacts, updateContact } from "../src/tools/contacts-tools"
 
-const mockClient = { requestPaginated: vi.fn() }
+const mockClient = { requestPaginated: vi.fn(), updateContact: vi.fn(), getContact: vi.fn(), deleteContact: vi.fn() }
 
 const pages: Record<string, ReadonlyArray<Record<string, unknown>>> = {
   "/me/contactFolders": [{ id: "F1", displayName: "Family" }],
@@ -102,5 +102,69 @@ describe("exportContacts", () => {
 
     expect(result.isLeft()).toBe(true)
     expect((result.value as Error).message).toContain("Contacts/Family")
+  })
+})
+
+describe("updateContact", () => {
+  beforeEach(() => {
+    mockClient.updateContact.mockImplementation(async (id: string, body: Record<string, unknown>) =>
+      Right({ id, displayName: "Someone", ...body }),
+    )
+  })
+
+  it("sends only the fields that were passed", async () => {
+    await updateContact({ contact_id: "C1", categories: ["Friends"], mobile_phone: "0400 000 000" })
+
+    expect(mockClient.updateContact).toHaveBeenCalledWith("C1", {
+      categories: ["Friends"],
+      mobilePhone: "0400 000 000",
+    })
+  })
+
+  // Graph replaces list properties wholesale, so an empty list is how a caller clears one;
+  // dropping it as "nothing to send" would make clearing impossible.
+  it("sends an empty list to clear a list property", async () => {
+    await updateContact({ contact_id: "C1", categories: [] })
+
+    expect(mockClient.updateContact).toHaveBeenCalledWith("C1", { categories: [] })
+  })
+
+  it("wraps email addresses in the shape Graph expects", async () => {
+    await updateContact({ contact_id: "C1", email_addresses: ["a@example.com", "b@example.com"] })
+
+    expect(mockClient.updateContact).toHaveBeenCalledWith("C1", {
+      emailAddresses: [{ address: "a@example.com" }, { address: "b@example.com" }],
+    })
+  })
+
+  it("refuses an update with no fields", async () => {
+    const result = await updateContact({ contact_id: "C1" })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.updateContact).not.toHaveBeenCalled()
+  })
+})
+
+describe("deleteContact", () => {
+  it("returns the deleted contact's details", async () => {
+    mockClient.getContact.mockResolvedValue(
+      Right({ id: "C1", displayName: "Dup Person", emailAddresses: [{ address: "dup@example.com" }] }),
+    )
+    mockClient.deleteContact.mockResolvedValue(Right({}))
+
+    const result = await deleteContact({ contact_id: "C1" })
+
+    expect(mockClient.deleteContact).toHaveBeenCalledWith("C1")
+    expect(result.value).toContain("Dup Person")
+    expect(result.value).toContain("dup@example.com")
+  })
+
+  it("does not delete when the contact cannot be read", async () => {
+    mockClient.getContact.mockResolvedValue(Left({ type: "http", message: "Not found" }))
+
+    const result = await deleteContact({ contact_id: "C1" })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.deleteContact).not.toHaveBeenCalled()
   })
 })
