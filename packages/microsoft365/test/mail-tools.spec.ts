@@ -1,5 +1,5 @@
 import { Some } from "functype"
-import { Right } from "functype/either"
+import { Left, Right } from "functype/either"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { GraphMessage } from "../src/types"
@@ -9,6 +9,7 @@ vi.mock("../src/client/graph-client", () => ({
 }))
 
 import { getGraphClient } from "../src/client/graph-client"
+import { MESSAGE_SUMMARY_FIELDS } from "../src/utils/formatters"
 import {
   createDraft,
   createForwardDraft,
@@ -17,7 +18,9 @@ import {
   createReplyDraft,
   getMessage,
   listMailFolders,
+  listMessages,
   moveMessage,
+  searchMessages,
   listAttachments,
   sendDraft,
   sendForward,
@@ -37,6 +40,9 @@ const mockClient = {
   createReplyAllDraft: vi.fn(),
   createForwardDraft: vi.fn(),
   getMessage: vi.fn(),
+  listMessages: vi.fn(),
+  listAllMessages: vi.fn(),
+  searchMessages: vi.fn(),
   listMailFolders: vi.fn(),
   moveMessage: vi.fn(),
   requestPaginated: vi.fn(),
@@ -320,6 +326,92 @@ describe("mail-tools", () => {
       expect(result.isLeft()).toBe(true)
       expect((result.value as Error).message).toContain("recipient is required")
       expect(mockClient.createForwardDraft).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("listMessages", () => {
+    const inboxMessage: GraphMessage = {
+      id: "m1",
+      subject: "Quarterly report",
+      from: { emailAddress: { name: "Jane Doe", address: "jane@example.com" } },
+      receivedDateTime: "2026-10-03T09:00:00Z",
+      isRead: true,
+      internetMessageId: "<q3@mail.example.com>",
+      bodyPreview: "Numbers attached.",
+    }
+
+    it("selects only the summary fields and sorts newest first, across every folder by default", async () => {
+      mockClient.listMessages.mockResolvedValue(Right({ value: [inboxMessage] }))
+
+      const result = await listMessages({})
+
+      expect(mockClient.listMessages).toHaveBeenCalledWith(
+        { $select: MESSAGE_SUMMARY_FIELDS, $filter: undefined, $orderby: "receivedDateTime desc", $top: 25 },
+        undefined,
+      )
+      expect(result.value).toContain("from Jane Doe <jane@example.com>")
+      expect(result.value).toContain("(Message-ID: <q3@mail.example.com>)")
+      expect(result.value).not.toContain("Numbers attached.")
+    })
+
+    it("passes a well-known folder straight through and shows previews when asked", async () => {
+      mockClient.listMessages.mockResolvedValue(Right({ value: [inboxMessage] }))
+
+      const result = await listMessages({ folder: "Inbox", include_preview: true, top: 5 })
+
+      expect(mockClient.listMessages).toHaveBeenCalledWith(expect.objectContaining({ $top: 5 }), "inbox")
+      expect(mockClient.listMailFolders).not.toHaveBeenCalled()
+      expect(result.value).toContain("\n  > Numbers attached.")
+    })
+
+    it("resolves a top-level folder's display name to its ID, as move_message does", async () => {
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-clients", displayName: "Clients" }] }))
+      mockClient.listMessages.mockResolvedValue(Right({ value: [] }))
+
+      await listMessages({ folder: "clients" })
+
+      expect(mockClient.listMessages).toHaveBeenCalledWith(expect.anything(), "f-clients")
+    })
+
+    it("explains an unknown folder name instead of surfacing a bare Graph error", async () => {
+      mockClient.listMailFolders.mockResolvedValue(Right({ value: [] }))
+      mockClient.listMessages.mockResolvedValue(Left({ type: "not_found", message: "Item not found." }))
+
+      const result = await listMessages({ folder: "Clinets" })
+
+      expect(mockClient.listMessages).toHaveBeenCalledWith(expect.anything(), "Clinets")
+      expect((result.value as Error).message).toContain('No top-level folder is named "Clinets"')
+      expect((result.value as Error).message).toContain("list_mail_folders")
+    })
+
+    it("pages through one folder when fetch_all_pages is set", async () => {
+      mockClient.listAllMessages.mockResolvedValue(Right([inboxMessage]))
+
+      const result = await listMessages({
+        folder: "inbox",
+        fetch_all_pages: true,
+        include_preview: true,
+        filter: "isRead eq true",
+      })
+
+      expect(mockClient.listAllMessages).toHaveBeenCalledWith(
+        { $select: MESSAGE_SUMMARY_FIELDS, $filter: "isRead eq true", $orderby: "receivedDateTime desc" },
+        "inbox",
+      )
+      expect(mockClient.listMessages).not.toHaveBeenCalled()
+      expect(result.value).toContain("Quarterly report")
+      expect(result.value).toContain("\n  > Numbers attached.")
+    })
+
+    // search_messages shares the formatter, so its lines change the same way.
+    it("formats search results with the same line, ending in the Graph ID", async () => {
+      mockClient.searchMessages.mockResolvedValue(Right({ value: [inboxMessage] }))
+
+      const result = await searchMessages({ query: "report" })
+
+      expect(result.value).toContain(
+        "from Jane Doe <jane@example.com> (2026-10-03T09:00:00Z) (Message-ID: <q3@mail.example.com>) (ID: m1)",
+      )
     })
   })
 

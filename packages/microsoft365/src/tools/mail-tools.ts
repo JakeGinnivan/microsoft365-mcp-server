@@ -4,7 +4,13 @@ import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
 import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
-import { formatAttachmentList, formatMailFolderList, formatMessageDetail, formatMessageList } from "../utils/formatters"
+import {
+  formatAttachmentList,
+  formatMailFolderList,
+  formatMessageDetail,
+  formatMessageList,
+  MESSAGE_SUMMARY_FIELDS,
+} from "../utils/formatters"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -15,28 +21,44 @@ const requireClient = () => {
 export const listMessages = async (params: {
   top?: number
   filter?: string
+  folder?: string
+  include_preview?: boolean
   fetch_all_pages?: boolean
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  if (params.fetch_all_pages) {
-    const result = await client.requestPaginated<GraphMessage>("/me/messages", {
-      odataParams: { $filter: params.filter, $orderby: "receivedDateTime desc" },
-    })
-    return result
-      .mapLeft((error) => new UserError(`Failed to list messages: ${error.message}`))
-      .map((items) => formatMessageList(items))
-  }
-
-  const result = await client.listMessages({
-    $top: params.top ?? 25,
+  // $select keeps full message bodies out of the response: without it Graph returns every body in
+  // HTML, which the listing never prints.
+  const odataParams = {
+    $select: MESSAGE_SUMMARY_FIELDS,
     $filter: params.filter,
     $orderby: "receivedDateTime desc",
-  })
+  }
+  const options = { preview: params.include_preview ?? false }
+
+  // Same resolution as move_message, so both tools accept the same folder names.
+  const resolved = params.folder === undefined ? undefined : await resolveDestination(client, params.folder)
+  if (resolved?.isLeft()) return Left(resolved.value as UserError)
+  const target = resolved?.orThrow()
+
+  const toUserError = (error: { message: string }) =>
+    target?.assumedId
+      ? new UserError(
+          `No top-level folder is named "${params.folder}", and Graph rejected it as a folder ID: ` +
+            `${error.message}. Check list_mail_folders for the name, or pass a subfolder's ID.`,
+        )
+      : new UserError(`Failed to list messages: ${error.message}`)
+
+  if (params.fetch_all_pages) {
+    const result = await client.listAllMessages(odataParams, target?.id)
+    return result.mapLeft(toUserError).map((items) => formatMessageList(items as ReadonlyArray<GraphMessage>, options))
+  }
+
+  const result = await client.listMessages({ ...odataParams, $top: params.top ?? 25 }, target?.id)
   return result
-    .mapLeft((error) => new UserError(`Failed to list messages: ${error.message}`))
-    .map((response) => formatMessageList((response as ODataResponse<never>).value))
+    .mapLeft(toUserError)
+    .map((response) => formatMessageList((response as ODataResponse<GraphMessage>).value, options))
 }
 
 export const getMessage = async (params: {
