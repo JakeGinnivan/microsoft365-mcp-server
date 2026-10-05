@@ -674,22 +674,112 @@ export const formatChatSummary = (chat: GraphChat): string =>
 export const formatChatList = (chats: ReadonlyArray<GraphChat>): string =>
   chats.length === 0 ? "No chats found." : `# Chats\n\n${chats.map(formatChatSummary).join("\n")}`
 
-export const formatChatMessageSummary = (msg: GraphChatMessage): string => {
-  const from = Option(msg.from?.user?.displayName).fold(
-    () => "Unknown",
-    (v) => v,
-  )
-  const content = Option(msg.body?.content)
-    .map((c) => c.substring(0, 100) + (c.length > 100 ? "..." : ""))
-    .fold(
-      () => "",
-      (v) => v,
-    )
-  return `- **${from}** (${msg.createdDateTime ?? ""}): ${content}`
+const HTML_ENTITIES: Readonly<Record<string, string>> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
 }
 
-export const formatChatMessageList = (msgs: ReadonlyArray<GraphChatMessage>): string =>
-  msgs.length === 0 ? "No chat messages found." : `# Chat Messages\n\n${msgs.map(formatChatMessageSummary).join("\n")}`
+// A code point past U+10FFFF makes String.fromCodePoint throw, and one such entity in one message
+// would fail the whole listing; it is left as written instead.
+const fromCodePointOr = (codePoint: number, fallback: string): string =>
+  Number.isNaN(codePoint) || codePoint > 0x10ffff ? fallback : String.fromCodePoint(codePoint)
+
+const decodeEntities = (text: string): string =>
+  text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+    const lower = code.toLowerCase()
+    if (lower.startsWith("#x")) return fromCodePointOr(parseInt(lower.slice(2), 16), entity)
+    if (lower.startsWith("#")) return fromCodePointOr(parseInt(lower.slice(1), 10), entity)
+    return HTML_ENTITIES[lower] ?? entity
+  })
+
+// Graph has no plain-text option for chat messages (unlike mail and events), so the HTML is reduced
+// here: an attachment or image becomes a marker, since a message that is only one would otherwise
+// read as empty; a Teams emoji keeps its alt text (a thumbs-up reply is otherwise blank); an <at>
+// mention keeps its name; script and style contents go; everything else loses its tags. A tag is
+// matched with quoted attributes in mind, so a ">" inside one does not leave attribute text behind.
+const TAG = /<(?:[^>"']|"[^"]*"|'[^']*')*>/g
+export const chatMessageText = (body?: { readonly contentType?: string; readonly content?: string }): string => {
+  const content = body?.content ?? ""
+  const text =
+    body?.contentType?.toLowerCase() === "html"
+      ? decodeEntities(
+          content
+            .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, " ")
+            .replace(/<attachment\b[^>]*>(\s*<\/attachment>)?/gi, " [attachment] ")
+            .replace(/<emoji\b[^>]*?\balt="([^"]*)"[^>]*>(\s*<\/emoji>)?/gi, " $1 ")
+            .replace(/<img\b[^>]*>/gi, " [image] ")
+            .replace(/<(br|\/p|\/div|\/li|\/td|\/th|\/tr)\b[^>]*>/gi, " ")
+            .replace(TAG, ""),
+        )
+      : content
+  return text.replace(/\s+/g, " ").trim()
+}
+
+export type ChatMessageListOptions = {
+  // The signed-in user's id, for [You] and [Mentions you]. Undefined when it could not be resolved.
+  readonly meId?: string
+  readonly maxChars?: number
+}
+
+export const CHAT_MESSAGE_DEFAULT_MAX_CHARS = 300
+
+// Printed once, at the end, when the signed-in user could not be resolved, so a caller can detect it.
+// It names the flags without brackets so a parser scanning lines for "[You]" cannot match the note.
+// Printed at the end of a since listing that stopped at top while more messages matched.
+export const CHAT_MORE_MESSAGES_NOTE = "Note: more messages match; raise top or move since later to see them."
+
+export const CHAT_SELF_UNRESOLVED_NOTE =
+  "Note: the signed-in user could not be resolved, so the You and Mentions-you flags are omitted."
+
+// Only real messages: system events (joins, renames) carry no text worth reading, and a deleted
+// message keeps its row with an empty body.
+export const isReadableChatMessage = (msg: GraphChatMessage): boolean =>
+  (msg.messageType ?? "message") === "message" && !msg.deletedDateTime
+
+const chatMessageFlags = (msg: GraphChatMessage, meId?: string): string => {
+  const fromApp = !msg.from?.user && Boolean(msg.from?.application)
+  const importance = msg.importance?.toLowerCase()
+  const mentionsMe = meId !== undefined && (msg.mentions ?? []).some((mention) => mention?.mentioned?.user?.id === meId)
+  return [
+    meId !== undefined && msg.from?.user?.id === meId ? "[You]" : "",
+    fromApp ? "[App]" : "",
+    importance === "urgent" ? "[Urgent]" : importance === "high" ? "[High importance]" : "",
+    mentionsMe ? "[Mentions you]" : "",
+  ]
+    .filter((flag) => flag !== "")
+    .map((flag) => ` ${flag}`)
+    .join("")
+}
+
+export const formatChatMessageSummary = (msg: GraphChatMessage, options: ChatMessageListOptions = {}): string => {
+  const from = msg.from?.user?.displayName ?? msg.from?.application?.displayName ?? "Unknown"
+  const maxChars = options.maxChars ?? CHAT_MESSAGE_DEFAULT_MAX_CHARS
+  const text = chatMessageText(msg.body)
+  const clipped = text.length > maxChars ? `${text.slice(0, maxChars)}…` : text
+  const body = clipped === "" ? "" : `\n  > ${clipped}`
+  return `- **${from}** (${msg.createdDateTime ?? ""})${chatMessageFlags(msg, options.meId)} (ID: ${msg.id})${body}`
+}
+
+export const formatChatMessageList = (
+  msgs: ReadonlyArray<GraphChatMessage>,
+  options: ChatMessageListOptions & { readonly selfUnresolved?: boolean; readonly moreRemain?: boolean } = {},
+): string => {
+  const readable = msgs.filter(isReadableChatMessage)
+  const note = [
+    options.moreRemain ? CHAT_MORE_MESSAGES_NOTE : "",
+    options.selfUnresolved ? CHAT_SELF_UNRESOLVED_NOTE : "",
+  ]
+    .filter((line) => line !== "")
+    .map((line) => `\n\n${line}`)
+    .join("")
+  return readable.length === 0
+    ? `No chat messages found.${note}`
+    : `# Chat Messages\n\n${readable.map((msg) => formatChatMessageSummary(msg, options)).join("\n")}${note}`
+}
 
 // Auth Status
 export const formatAuthStatus = (status: {

@@ -936,6 +936,14 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       "the chat by its topic or its members and shows when the last message was sent and by whom. " +
       "Note: the self-chat (notes to self) is not listed here — use chat_id '48:notes' to send to it directly.",
     parameters: z.object({
+      since: z
+        .string()
+        .optional()
+        .describe(
+          "Only chats whose last message is after this ISO 8601 time with a time zone, e.g. " +
+            "2026-10-01T00:00:00Z. Reads pages until it reaches an older chat (at most 20 pages) and returns " +
+            "every match unless top is set. Chats with no messages are skipped.",
+        ),
       top: z
         .number()
         .int()
@@ -943,8 +951,8 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
         .max(50)
         .optional()
         .describe(
-          "Number of chats to return (default: 25, max 50). Graph may return fewer per page when member " +
-            "names are included; use fetch_all_pages for more.",
+          "Number of chats to return (default: 25, max 50; with since, every match unless set). Graph may " +
+            "return fewer per page when member names are included; use fetch_all_pages for more.",
         ),
       fetch_all_pages: FETCH_ALL_PAGES_PARAM,
     }),
@@ -955,10 +963,29 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   },
   {
     name: "list_chat_messages",
-    description: "List messages in a Teams chat",
+    description:
+      "List messages in a Teams chat, newest first. Each message is a line " +
+      "'- **<sender>** (<created>) [You] [App] [Urgent|High importance] [Mentions you] (ID: <id>)' " +
+      "(flags only when they apply), followed by its text on a '  > ' line. System events (joins, " +
+      "renames) and deleted messages are left out.",
     parameters: z.object({
       chat_id: z.string().describe("Chat ID"),
-      top: z.number().optional().describe("Number of messages (default: 25)"),
+      top: z.number().int().positive().max(50).optional().describe("Number of messages (default: 25, max 50)"),
+      since: z
+        .string()
+        .optional()
+        .describe(
+          "Only messages created or changed after this ISO 8601 time with a time zone, e.g. " +
+            "2026-10-01T00:00:00Z. An old message edited after it is included; its line still shows when it " +
+            "was created. Returns at most top messages (default 25); if more match, the output ends with " +
+            "'Note: more messages match; raise top or move since later to see them.'",
+        ),
+      max_chars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Cut each message's text at this length (default: 300)"),
       fetch_all_pages: FETCH_ALL_PAGES_PARAM,
     }),
     execute: async (params) => unwrapResult(await listChatMessages(params)),
