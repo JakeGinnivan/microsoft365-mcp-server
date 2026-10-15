@@ -223,11 +223,12 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 
 ## Available Tools
 
-### Mail (16 tools)
+### Mail (17 tools)
 
 | Tool                     | Description                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `list_messages`          | List messages, all folders or one (`folder`), with optional filtering    |
+| `scan_messages`          | Scan compact headers with session refs and nextLink cursors              |
 | `get_message`            | Get a specific message with full body                                    |
 | `search_messages`        | Search messages by query                                                 |
 | `send_message`           | Send a new email                                                         |
@@ -243,6 +244,12 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `list_mail_folders`      | List top-level mail folders with item, unread and subfolder counts       |
 | `move_message`           | Move a message to a well-known folder, a folder name, or a folder ID     |
 | `batch_move_messages`    | Move up to 50 messages to one folder in a single call                    |
+
+`scan_messages` returns compact rows and a `cursor` whenever Graph has another page,
+including after a short or empty page. Continue by passing that cursor alone; it keeps
+the original folder and query. Cursors and message refs last for the server session.
+Search can page, but Graph limits it to 1,000 results. For mailbox coverage, use a
+filter such as `hasAttachments eq true` and follow every cursor to the end.
 
 > The `create_*_draft` tools produce a properly threaded draft (same conversation, full
 > quoted history) for review, then send via `send_draft`. They remain available under

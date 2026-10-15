@@ -85,6 +85,7 @@ import {
   listUsers,
   moveMessage,
   readDocument,
+  scanMessages,
   searchContacts,
   searchFiles,
   searchMessages,
@@ -329,11 +330,35 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     annotations: { readOnlyHint: true },
   },
   {
+    name: "scan_messages",
+    description:
+      "Scan message headers compactly as ref|received|from|subject|flags. Scope with folder and narrow with filter or search. Pass refs to get_message, list_attachments, move_message or batch_move_messages. Both filter and search scans page using Graph nextLink cursors: when a result says INCOMPLETE, call scan_messages with the returned cursor alone until no cursor remains. A short or empty page can still have a continuation. Search returns at most 1,000 results, so use filter and exhaust its cursors when mailbox coverage matters. A header is not a message: open messages and attachments the subject cannot rule out.",
+    parameters: z.object({
+      folder: z
+        .string()
+        .optional()
+        .describe(
+          "Folder to scan: well-known name (archive, inbox, sentitems), display name, or ID. Default: all mail",
+        ),
+      filter: z.string().optional().describe("OData filter, e.g. receivedDateTime ge 2026-01-01T00:00:00Z"),
+      search: z.string().optional().describe("Full-text search term. Cannot be combined with date ordering"),
+      top: z.number().int().min(1).max(1000).optional().describe("Rows per page (default 100, max 1000)"),
+      cursor: z
+        .string()
+        .optional()
+        .describe("Continuation cursor from a prior scan. Pass alone; valid for this session"),
+    }),
+    execute: async (params) => unwrapResult(await scanMessages(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "get_message",
     description:
       "Get a specific email message with full body content. Pass body_format:'text' for marketing or newsletter mail — Graph converts server-side, avoiding tens of thousands of characters of HTML and CSS.",
     parameters: z.object({
-      message_id: z.string().describe("The message ID"),
+      message_id: z.string().describe("The message ID, or a short ref returned by scan_messages"),
       body_format: z
         .enum(["text", "html"])
         .optional()
