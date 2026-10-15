@@ -28,7 +28,8 @@
  *     Default 3 retries, override with `MS365_GRAPH_MAX_RETRIES`.
  *
  *  3. **Circuit breaker** — a process-wide singleton tracks consecutive failures
- *     against Graph. After `MS365_GRAPH_CIRCUIT_THRESHOLD` failures (default 5)
+ *     against Graph (503/504, timeouts and network errors; never 429 throttling).
+ *     After `MS365_GRAPH_CIRCUIT_THRESHOLD` failures (default 5)
  *     the breaker opens and every subsequent call fast-fails for
  *     `MS365_GRAPH_CIRCUIT_COOLDOWN_MS` (default 30 s) before half-opening for a
  *     probe. Prevents flooding Graph when it is already on fire. Disable with
@@ -250,7 +251,7 @@ export const fetchWithResilience = async (
     const canRetry = attempt < config.maxRetries && retryAllowedByMethod
 
     if (!canRetry) {
-      breaker.recordFailure()
+      if (!is429) breaker.recordFailure()
       if (!retryAllowedByMethod && attempt === 0) {
         const what = response !== null ? `${response.status}` : "network error"
         console.error(
@@ -286,7 +287,8 @@ export const fetchWithResilience = async (
       }
     }
 
-    breaker.recordFailure()
+    // Throttling is handled by Retry-After, not the process-wide outage breaker.
+    if (!is429) breaker.recordFailure()
     attempt += 1
     await sleep(delayMs)
   }

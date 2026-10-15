@@ -189,6 +189,40 @@ describe("fetchWithResilience", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
+  it.each(["GET", "POST", "PATCH"])("keeps the breaker closed after exhausted 429 retries for %s", async (method) => {
+    const breaker = new CircuitBreaker(5, 30_000, false)
+    const fetchImpl = vi.fn(() => Promise.resolve(res(429, { "retry-after": "2" })))
+    const sleep = vi.fn(noSleep)
+
+    // Two requests exhaust eight attempts, exceeding the default failure threshold.
+    for (const account of ["first", "second"]) {
+      const response = await fetchWithResilience(
+        `https://graph.microsoft.com/v1.0/users/${account}/messages`,
+        { method },
+        config({ circuitDisabled: false }),
+        breaker,
+        sleep,
+        fetchImpl,
+      )
+      expect(response.status).toBe(429)
+      expect(breaker.getState()).toEqual({ failures: 0, openedAt: null, open: false })
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(8)
+    expect(sleep).toHaveBeenCalledTimes(6)
+    expect(sleep).toHaveBeenCalledWith(2_000)
+  })
+
+  it("does not count a 429 when retries are disabled or erase existing service failures", async () => {
+    const breaker = new CircuitBreaker(2, 30_000, false)
+    breaker.recordFailure()
+    const fetchImpl = vi.fn(() => Promise.resolve(res(429)))
+
+    await fetchWithResilience("https://g", undefined, config({ maxRetries: 0 }), breaker, noSleep, fetchImpl)
+
+    expect(breaker.getState()).toEqual({ failures: 1, openedAt: null, open: false })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   it("honours Retry-After on a 429", async () => {
     const fetchImpl = vi
       .fn()

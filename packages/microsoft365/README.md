@@ -437,6 +437,9 @@ normal use; these knobs exist for tuning a deployment without a code change.
 | `MS365_GRAPH_CIRCUIT_COOLDOWN_MS` | How long the breaker stays open before allowing a probe              | `30000`  |
 | `MS365_GRAPH_CIRCUIT_DISABLED`    | Disable the breaker entirely                                         | `false`  |
 
+Throttling (429) never counts toward the process-wide circuit breaker. Only
+503/504 responses, timeouts and network errors count as breaker failures.
+
 A 429 is retried on every method — Graph decides to throttle before it executes the
 operation, so nothing has landed server-side. A 503/504/network failure is retried only
 for idempotent methods (GET/HEAD/PUT/DELETE); retrying a POST or PATCH there could
