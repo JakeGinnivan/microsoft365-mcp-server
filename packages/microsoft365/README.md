@@ -76,9 +76,7 @@ MS365_USE_DEVICE_CODE=true
 ```
 
 This skips the browser and prints a URL and code to stderr. Open the URL on a
-browser-capable device and enter the code to sign in. Without this setting,
-interactive mode uses browser authentication; it does not automatically switch to
-device code if browser sign-in stalls or fails.
+browser-capable device and enter the code to sign in.
 
 ### Client Secret
 
