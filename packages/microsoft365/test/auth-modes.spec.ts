@@ -1,94 +1,44 @@
-import type { AccessToken, TokenCredential } from "@azure/identity"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { DeviceCodeCredential, InteractiveBrowserCredential, type TokenCredential } from "@azure/identity"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { isBrowserLaunchFailure, withDeviceCodeFallback } from "../src/auth/auth-modes"
+import { createCredential } from "../src/auth/auth-modes"
 
-const TOKEN: AccessToken = { token: "t", expiresOnTimestamp: 0 }
+const config = { mode: "interactive" as const, tenantId: "common", clientId: "11111111-1111-1111-1111-111111111111" }
+const token = { token: "test-token", expiresOnTimestamp: 1_000 }
 
-const credential = (impl: () => Promise<AccessToken | null>): TokenCredential => ({ getToken: impl })
+afterEach(() => vi.restoreAllMocks())
 
-beforeEach(() => {
-  vi.spyOn(console, "error").mockImplementation(() => {})
-})
-
-describe("isBrowserLaunchFailure", () => {
-  it.each([
-    "Arc is already open. Only one instance of Arc can be opened at a time.",
-    "Unable to open browser",
-    "spawn open ENOENT",
-    "no such file or directory",
-  ])("should treat %s as a launch failure", (message) => {
-    expect(isBrowserLaunchFailure(new Error(message))).toBe(true)
+describe("interactive authentication mode", () => {
+  it("uses the browser by default", () => {
+    const result = createCredential(config)
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toBeInstanceOf(InteractiveBrowserCredential)
   })
 
-  it("should match case-insensitively", () => {
-    expect(isBrowserLaunchFailure(new Error("ONLY ONE INSTANCE"))).toBe(true)
+  it("uses one device-code credential for repeated token requests when explicitly enabled", async () => {
+    const deviceToken = vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockResolvedValue(token)
+    const browserToken = vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
+    const result = createCredential({ ...config, useDeviceCode: true })
+    expect(result.isRight()).toBe(true)
+    const credential = result.value as TokenCredential
+    expect(credential).toBeInstanceOf(DeviceCodeCredential)
+
+    const scopes = ["https://graph.microsoft.com/.default"]
+    await expect(credential.getToken(scopes)).resolves.toBe(token)
+    await expect(credential.getToken(scopes)).resolves.toBe(token)
+    expect(deviceToken).toHaveBeenCalledTimes(2)
+    expect(deviceToken.mock.contexts).toEqual([credential, credential])
+    expect(browserToken).not.toHaveBeenCalled()
   })
 
-  it("should handle a non-Error value", () => {
-    expect(isBrowserLaunchFailure("could not open browser")).toBe(true)
-    expect(isBrowserLaunchFailure(undefined)).toBe(false)
-  })
+  it("propagates browser errors without starting another authentication flow", async () => {
+    const error = new Error("Unable to open browser")
+    vi.spyOn(InteractiveBrowserCredential.prototype, "getToken").mockRejectedValue(error)
+    const deviceToken = vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockResolvedValue(token)
+    const result = createCredential(config)
+    const credential = result.value as TokenCredential
 
-  it.each([
-    "AADSTS65004: User declined to consent",
-    "invalid_client: client id is malformed",
-    "getaddrinfo ENOTFOUND login.microsoftonline.com",
-  ])("should not treat %s as a launch failure", (message) => {
-    expect(isBrowserLaunchFailure(new Error(message))).toBe(false)
-  })
-})
-
-describe("withDeviceCodeFallback", () => {
-  it("should return the browser token when the browser works", async () => {
-    const fallback = vi.fn()
-    const wrapped = withDeviceCodeFallback(
-      credential(() => Promise.resolve(TOKEN)),
-      "tenant",
-      "client",
-      fallback,
-    )
-
-    await expect(wrapped.getToken("scope")).resolves.toBe(TOKEN)
-    expect(fallback).not.toHaveBeenCalled()
-  })
-
-  it("should fall back to device code when the browser cannot launch", async () => {
-    const deviceToken: AccessToken = { token: "device", expiresOnTimestamp: 0 }
-    const fallback = vi.fn(() => credential(() => Promise.resolve(deviceToken)))
-    const wrapped = withDeviceCodeFallback(
-      credential(() => Promise.reject(new Error("Arc is already open. Only one instance"))),
-      "tenant",
-      "client",
-      fallback,
-    )
-
-    await expect(wrapped.getToken("scope")).resolves.toBe(deviceToken)
-    expect(fallback).toHaveBeenCalledWith("tenant", "client")
-  })
-
-  it("should rethrow a non-launch error rather than hide it behind a second prompt", async () => {
-    const fallback = vi.fn()
-    const wrapped = withDeviceCodeFallback(
-      credential(() => Promise.reject(new Error("AADSTS65004: User declined to consent"))),
-      "tenant",
-      "client",
-      fallback,
-    )
-
-    await expect(wrapped.getToken("scope")).rejects.toThrow("declined to consent")
-    expect(fallback).not.toHaveBeenCalled()
-  })
-
-  it("should pass scopes and options through to both credentials", async () => {
-    const browser = vi.fn(() => Promise.reject(new Error("unable to open browser")))
-    const device = vi.fn(() => Promise.resolve(TOKEN))
-    const wrapped = withDeviceCodeFallback(credential(browser), "tenant", "client", () => credential(device))
-
-    const options = { requestOptions: { timeout: 1 } }
-    await wrapped.getToken(["a", "b"], options)
-
-    expect(browser).toHaveBeenCalledWith(["a", "b"], options)
-    expect(device).toHaveBeenCalledWith(["a", "b"], options)
+    await expect(credential.getToken("scope")).rejects.toBe(error)
+    expect(deviceToken).not.toHaveBeenCalled()
   })
 })

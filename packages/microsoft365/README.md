@@ -68,15 +68,17 @@ MS365_CLIENT_ID=your-client-id
 MS365_TENANT_ID=common          # "common" for multi-tenant
 ```
 
-If the browser cannot be launched, authentication falls back to device code
-automatically and prints a URL and code to stderr. This covers headless hosts and
-macOS browsers that refuse a second instance while already running (Arc, for
-example, reports "Arc is already open. Only one instance of Arc can be opened at a
-time."). To skip the browser attempt entirely:
+For headless hosts, SSH sessions, or a machine where the browser cannot launch,
+select device-code authentication explicitly:
 
 ```bash
 MS365_USE_DEVICE_CODE=true
 ```
+
+This skips the browser and prints a URL and code to stderr. Open the URL on a
+browser-capable device and enter the code to sign in. Without this setting,
+interactive mode uses browser authentication; it does not automatically switch to
+device code if browser sign-in stalls or fails.
 
 ### Client Secret
 
