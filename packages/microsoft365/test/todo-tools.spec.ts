@@ -7,11 +7,18 @@ vi.mock("../src/client/graph-client", () => ({
 }))
 
 import { getGraphClient } from "../src/client/graph-client"
-import { createTodoTask, updateTodoTask } from "../src/tools/todo-tools"
+import { createTodoTask, deleteTodoTask, updateTodoTask } from "../src/tools/todo-tools"
 
 const mockClient = {
   createTodoTask: vi.fn(),
   updateTodoTask: vi.fn(),
+  getTodoTask: vi.fn(),
+  deleteTodoTask: vi.fn(),
+}
+
+const QUARTERLY = {
+  pattern: { type: "absoluteMonthly", interval: 3, dayOfMonth: 1 },
+  range: { type: "noEnd", startDate: "2026-10-01" },
 }
 
 const LIST_ID = "list-1"
@@ -148,6 +155,32 @@ describe("todo-tools", () => {
       expect(mockClient.updateTodoTask).toHaveBeenCalledWith(LIST_ID, "t1", { recurrence: null })
     })
 
+    // Graph rolls a recurring task forward on completion: the same id comes back as
+    // notStarted with the next due date, and the completed occurrence becomes a
+    // separate task. "Task updated" over a notStarted task reads as a failure.
+    it("should explain the roll-forward when completing a recurring task", async () => {
+      mockClient.updateTodoTask.mockResolvedValue(
+        Right({
+          id: "t1",
+          title: "Clear the gutters",
+          status: "notStarted",
+          dueDateTime: { dateTime: "2027-01-01T00:00:00.0000000" },
+          recurrence: QUARTERLY,
+        }),
+      )
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", status: "completed" })
+      expect(result.isRight()).toBe(true)
+      const text = result.value as string
+      expect(text).toContain("Occurrence completed")
+      expect(text).toContain("2027-01-01")
+    })
+
+    it("should say plainly when a non-recurring task is completed", async () => {
+      mockClient.updateTodoTask.mockResolvedValue(Right({ id: "t1", title: "Buy milk", status: "completed" }))
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", status: "completed" })
+      expect(result.value as string).toContain("Task completed.")
+    })
+
     it("should reject setting and clearing a recurrence at once", async () => {
       const result = await updateTodoTask({
         list_id: LIST_ID,
@@ -157,6 +190,58 @@ describe("todo-tools", () => {
       })
       expect(result.isLeft()).toBe(true)
       expect(mockClient.updateTodoTask).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("deleteTodoTask", () => {
+    it("should delete a one-off task and name it", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", title: "Buy milk" }))
+      mockClient.deleteTodoTask.mockResolvedValue(Right({}))
+      const result = await deleteTodoTask({ list_id: LIST_ID, task_id: "t1" })
+      expect(result.isRight()).toBe(true)
+      expect(result.value as string).toContain('Deleted "Buy milk"')
+      expect(mockClient.deleteTodoTask).toHaveBeenCalledWith(LIST_ID, "t1")
+    })
+
+    // A task id addresses the whole series, not one occurrence, and To Do has no
+    // recycle bin — so this refusal is the only thing standing between a routine
+    // tidy-up and silently destroying a recurring chore.
+    it("should refuse a recurring task without force", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", title: "Clear the gutters", recurrence: QUARTERLY }))
+      const result = await deleteTodoTask({ list_id: LIST_ID, task_id: "t1" })
+      expect(result.isLeft()).toBe(true)
+      const message = (result.value as Error).message
+      expect(message).toContain("ends the whole series")
+      expect(message).toContain("every 3 months")
+      expect(message).toContain("clear_recurrence")
+      expect(mockClient.deleteTodoTask).not.toHaveBeenCalled()
+    })
+
+    it("should delete a recurring task when forced, and say the series ended", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", title: "Clear the gutters", recurrence: QUARTERLY }))
+      mockClient.deleteTodoTask.mockResolvedValue(Right({}))
+      const result = await deleteTodoTask({ list_id: LIST_ID, task_id: "t1", force: true })
+      expect(result.isRight()).toBe(true)
+      expect(result.value as string).toContain("whole recurring series")
+      expect(mockClient.deleteTodoTask).toHaveBeenCalledWith(LIST_ID, "t1")
+    })
+
+    it("should not delete when the task cannot be read first", async () => {
+      mockClient.getTodoTask.mockResolvedValue((await import("functype/either")).Left({ message: "ErrorItemNotFound" }))
+      const result = await deleteTodoTask({ list_id: LIST_ID, task_id: "gone" })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("before deleting")
+      expect(mockClient.deleteTodoTask).not.toHaveBeenCalled()
+    })
+
+    it("should surface a delete failure as a UserError", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", title: "Buy milk" }))
+      mockClient.deleteTodoTask.mockResolvedValue(
+        (await import("functype/either")).Left({ message: "ErrorAccessDenied" }),
+      )
+      const result = await deleteTodoTask({ list_id: LIST_ID, task_id: "t1" })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("Failed to delete task")
     })
   })
 })
