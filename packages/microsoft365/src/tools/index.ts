@@ -6,6 +6,7 @@ export {
   getEvent,
   listCalendarView,
   listEvents,
+  respondToEvent,
   updateEvent,
 } from "./calendar-tools"
 export { listChatMessages, listChats, sendChatMessage } from "./chat-tools"
@@ -28,17 +29,20 @@ export {
   createForwardDraft,
   createReplyAllDraft,
   createReplyDraft,
+  deleteDraft,
   getMessage,
   listAttachments,
   listMailFolders,
   listMessages,
   moveMessage,
+  scanMessages,
   searchMessages,
   sendDraft,
   sendForward,
   sendMessage,
   sendReply,
   sendReplyAll,
+  updateDraft,
 } from "./mail-tools"
 export { getMeetingTranscript, listMeetingTranscripts } from "./meetings-tools"
 export {
@@ -66,5 +70,5 @@ export {
 export { readDocument } from "./read-document-tools"
 export { getSite, listSiteDrives, listSiteItems, listSites, searchSiteFiles } from "./sharepoint-tools"
 export { listChannelMessages, listChannels, listTeams, sendChannelMessage } from "./teams-tools"
-export { createTodoTask, listTodoLists, listTodoTasks, updateTodoTask } from "./todo-tools"
+export { createTodoTask, deleteTodoTask, listTodoLists, listTodoTasks, updateTodoTask } from "./todo-tools"
 export { getMe, getUser, listUsers } from "./users-tools"

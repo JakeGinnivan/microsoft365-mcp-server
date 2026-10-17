@@ -70,6 +70,23 @@ const createGraphClient = (auth: AuthStrategy) => {
   const listMailFolders = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
 
+  // Only follow Graph-issued mail collection links; never send a bearer token to another host.
+  const nextMessageScanPage = (nextLink: string) => {
+    const url = URL.canParse(nextLink) ? new URL(nextLink) : undefined
+    const match = /^\/(v1\.0|beta)(\/me\/(?:mailFolders\/[^/]+\/)?messages)$/.exec(url?.pathname ?? "")
+    if (url?.origin !== GRAPH_API_BASE || url.username || url.password || url.hash || !match) {
+      return Promise.resolve(
+        Left<GraphApiError, ODataResponse<GraphMessage>>({
+          type: "api",
+          message: "Invalid Graph message continuation URL.",
+        }),
+      )
+    }
+    return request<ODataResponse<GraphMessage>>("GET", `${match[2]}${url.search}`, {
+      version: match[1] as GraphApiVersion,
+    })
+  }
+
   const moveMessage = (id: string, destinationId: string) =>
     request<GraphMessage>("POST", `/me/messages/${id}/move`, { body: { destinationId } })
 
@@ -87,6 +104,15 @@ const createGraphClient = (auth: AuthStrategy) => {
     request<GraphMessage>("POST", "/me/messages", { body: message })
 
   const sendDraft = (messageId: string) => request<Record<string, never>>("POST", `/me/messages/${messageId}/send`)
+
+  // Draft edits and deletes check isDraft first, so this fetches only what that check needs.
+  const getDraftState = (id: string) =>
+    request<GraphMessage>("GET", `/me/messages/${id}`, { odataParams: { $select: ["id", "isDraft", "subject"] } })
+
+  const updateMessage = (id: string, changes: Record<string, unknown>) =>
+    request<GraphMessage>("PATCH", `/me/messages/${id}`, { body: changes })
+
+  const deleteMessage = (id: string) => request<Record<string, never>>("DELETE", `/me/messages/${id}`)
 
   const sendReply = (id: string, comment: string) =>
     request<Record<string, never>>("POST", `/me/messages/${id}/reply`, { body: { comment } })
@@ -139,6 +165,13 @@ const createGraphClient = (auth: AuthStrategy) => {
     request<GraphEvent>("PATCH", `/me/events/${id}`, { body: event })
 
   const deleteEvent = (id: string) => request<Record<string, never>>("DELETE", `/me/events/${id}`)
+
+  // accept, decline and tentativelyAccept take the same body; Graph answers 202 with no content.
+  const respondToEvent = (
+    id: string,
+    action: "accept" | "decline" | "tentativelyAccept",
+    body: { comment?: string; sendResponse: boolean },
+  ) => request<Record<string, never>>("POST", `/me/events/${id}/${action}`, { body })
 
   // findMeetingTimes suggests slots where attendees are free. POST body; Prefer header forces
   // UTC in the response so callers don't get mailbox-local times back unexpectedly.
@@ -291,6 +324,12 @@ const createGraphClient = (auth: AuthStrategy) => {
       body: { body: { content } },
     })
 
+  // Graph only accepts replies to a top-level channel message, not to another reply.
+  const replyToChannelMessage = (teamId: string, channelId: string, messageId: string, content: string) =>
+    request<GraphChannelMessage>("POST", `/teams/${teamId}/channels/${channelId}/messages/${messageId}/replies`, {
+      body: { body: { content } },
+    })
+
   // Chats
   const listChats = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphChat>>("GET", "/me/chats", { odataParams })
@@ -303,12 +342,32 @@ const createGraphClient = (auth: AuthStrategy) => {
       body: { body: { contentType, content } },
     })
 
+  // Graph returns the existing chat for a one-on-one pair, but creates a new group chat every call.
+  const createChat = (chat: Record<string, unknown>) => request<GraphChat>("POST", "/chats", { body: chat })
+
   // Users & Groups
   const getMe = () => request<GraphUser>("GET", "/me")
 
   const listUsers = (odataParams?: ODataParams) => request<ODataResponse<GraphUser>>("GET", "/users", { odataParams })
 
   const getUser = (id: string) => request<GraphUser>("GET", `/users/${id}`)
+
+  // /users/{key} accepts an ID or a user principal name, not an email address, so an address that
+  // differs from the UPN needs the mail filter below. A guest UPN contains "#EXT#", and "#" would
+  // otherwise end the path.
+  const CHAT_MEMBER_FIELDS = ["id", "displayName", "mail", "userPrincipalName", "userType"]
+
+  const getUserByKey = (key: string) =>
+    request<GraphUser>("GET", `/users/${key.replace(/#/g, "%23")}`, { odataParams: { $select: CHAT_MEMBER_FIELDS } })
+
+  // userType is only returned when selected, and the caller needs it too: an in-tenant guest must
+  // join a chat as a guest, the caller included.
+  const getMeAsChatMember = () => request<GraphUser>("GET", "/me", { odataParams: { $select: CHAT_MEMBER_FIELDS } })
+
+  const findUsersByMail = (address: string) =>
+    request<ODataResponse<GraphUser>>("GET", "/users", {
+      odataParams: { $filter: `mail eq '${address.replace(/'/g, "''")}'`, $select: CHAT_MEMBER_FIELDS },
+    })
 
   const listGroups = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphGroup>>("GET", "/groups", { odataParams })
@@ -403,6 +462,12 @@ const createGraphClient = (auth: AuthStrategy) => {
   const updateTodoTask = (listId: string, taskId: string, task: Record<string, unknown>) =>
     request<GraphTodoTask>("PATCH", `/me/todo/lists/${listId}/tasks/${taskId}`, { body: task })
 
+  const getTodoTask = (listId: string, taskId: string) =>
+    request<GraphTodoTask>("GET", `/me/todo/lists/${listId}/tasks/${taskId}`)
+
+  const deleteTodoTask = (listId: string, taskId: string) =>
+    request<Record<string, never>>("DELETE", `/me/todo/lists/${listId}/tasks/${taskId}`)
+
   // Text-only file upload. Binary uploads must use get_upload_config (httpStream) or upload_file_from_path (stdio).
   const uploadFile = async (
     path: string,
@@ -473,6 +538,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     // Mail
     listMessages,
     listAllMessages,
+    nextMessageScanPage,
     getMessage,
     listMailFolders,
     moveMessage,
@@ -481,6 +547,9 @@ const createGraphClient = (auth: AuthStrategy) => {
     sendMessage,
     createDraft,
     sendDraft,
+    getDraftState,
+    updateMessage,
+    deleteMessage,
     sendReply,
     sendReplyAll,
     sendForward,
@@ -495,6 +564,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     createEvent,
     updateEvent,
     deleteEvent,
+    respondToEvent,
     findMeetingTimes,
     // Contacts
     listContacts,
@@ -523,15 +593,20 @@ const createGraphClient = (auth: AuthStrategy) => {
     listChats,
     listChatMessages,
     sendChatMessage,
+    createChat,
     // Teams
     listTeams,
     listChannels,
     listChannelMessages,
     sendChannelMessage,
+    replyToChannelMessage,
     // Users & Groups
     getMe,
     listUsers,
     getUser,
+    getUserByKey,
+    getMeAsChatMember,
+    findUsersByMail,
     listGroups,
     getGroup,
     listGroupMembers,
@@ -563,6 +638,8 @@ const createGraphClient = (auth: AuthStrategy) => {
     listTodoTasks,
     createTodoTask,
     updateTodoTask,
+    getTodoTask,
+    deleteTodoTask,
     // Upload
     uploadFile,
     // Generic

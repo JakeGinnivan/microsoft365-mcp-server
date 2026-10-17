@@ -37,8 +37,10 @@ import {
   createReplyAllDraft,
   createReplyDraft,
   createTodoTask,
+  deleteDraft,
   deleteEvent,
   deleteOnenotePage,
+  deleteTodoTask,
   downloadFile,
   findMeetingAvailability,
   getAuthStatusTool,
@@ -85,6 +87,8 @@ import {
   listUsers,
   moveMessage,
   readDocument,
+  respondToEvent,
+  scanMessages,
   searchContacts,
   searchFiles,
   searchMessages,
@@ -98,6 +102,7 @@ import {
   sendReplyAll,
   setAccessTokenTool,
   switchAccountTool,
+  updateDraft,
   updateEvent,
   updateOnenotePageContent,
   updatePlannerTask,
@@ -107,7 +112,7 @@ import {
   uploadFileFromPath,
 } from "./tools"
 import type { ToolDefinition } from "./tools/tool-definitions"
-import { DOMAIN_DESCRIPTIONS, filterTools, type ToolFilterConfig } from "./tools/tool-registry"
+import { DOMAIN_DESCRIPTIONS, filterTools, requireDraftEnabled, type ToolFilterConfig } from "./tools/tool-registry"
 import type { AuthConfig } from "./types"
 import { resolveUploadAccessToken } from "./upload/upload-auth"
 import { auditToolCall, auditToolError, auditToolResult } from "./utils/audit"
@@ -206,7 +211,7 @@ const resolveFilterConfig = (transport: "stdio" | "httpStream"): ToolFilterConfi
   enabledPattern: process.env.MS365_ENABLED_TOOLS,
   readOnly: process.env.MS365_READ_ONLY === "true",
   orgMode: process.env.MS365_ORG_MODE === "true",
-  requireDraft: process.env.MS365_REQUIRE_DRAFT === "true",
+  requireDraft: requireDraftEnabled(),
   transport,
 })
 
@@ -330,11 +335,35 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     annotations: { readOnlyHint: true },
   },
   {
+    name: "scan_messages",
+    description:
+      "Scan message headers compactly as ref|received|from|subject|flags. Scope with folder and narrow with filter or search. Pass refs to get_message, list_attachments, move_message or batch_move_messages. Both filter and search scans page using Graph nextLink cursors: when a result says INCOMPLETE, call scan_messages with the returned cursor alone until no cursor remains. A short or empty page can still have a continuation. Search returns at most 1,000 results, so use filter and exhaust its cursors when mailbox coverage matters. A header is not a message: open messages and attachments the subject cannot rule out.",
+    parameters: z.object({
+      folder: z
+        .string()
+        .optional()
+        .describe(
+          "Folder to scan: well-known name (archive, inbox, sentitems), display name, or ID. Default: all mail",
+        ),
+      filter: z.string().optional().describe("OData filter, e.g. receivedDateTime ge 2026-01-01T00:00:00Z"),
+      search: z.string().optional().describe("Full-text search term. Cannot be combined with date ordering"),
+      top: z.number().int().min(1).max(1000).optional().describe("Rows per page (default 100, max 1000)"),
+      cursor: z
+        .string()
+        .optional()
+        .describe("Continuation cursor from a prior scan. Pass alone; valid for this session"),
+    }),
+    execute: async (params) => unwrapResult(await scanMessages(params)),
+    domain: "mail",
+    readOnly: true,
+    annotations: { readOnlyHint: true },
+  },
+  {
     name: "get_message",
     description:
       "Get a specific email message with full body content. Pass body_format:'text' for marketing or newsletter mail — Graph converts server-side, avoiding tens of thousands of characters of HTML and CSS.",
     parameters: z.object({
-      message_id: z.string().describe("The message ID"),
+      message_id: z.string().describe("The message ID, or a short ref returned by scan_messages"),
       body_format: z
         .enum(["text", "html"])
         .optional()
@@ -362,7 +391,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     description:
       "List a message's attachments with name, content type and size. Returns a read_document path for file attachments so their text can be extracted (PDF, Office, etc); cloud links and embedded Outlook items are marked as not readable that way.",
     parameters: z.object({
-      message_id: z.string().describe("The message ID whose attachments to list"),
+      message_id: z.string().describe("The message ID, or a short ref from scan_messages, whose attachments to list"),
     }),
     execute: async (params) => unwrapResult(await listAttachments(params)),
     domain: "mail",
@@ -374,7 +403,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     description:
       "Move a message to another mail folder. Destination accepts a well-known name (archive, deleteditems, inbox, junkemail), a top-level folder display name, or a folder ID. A well-known name always wins over a custom folder of the same name, and the confirmation says which was used. Subfolders cannot be resolved by name — pass their ID. Moving to deleteditems is recoverable; use list_mail_folders to see what exists.",
     parameters: z.object({
-      message_id: z.string().describe("The message ID to move"),
+      message_id: z.string().describe("The message ID, or a short ref from scan_messages, to move"),
       destination: z
         .string()
         .describe("Destination folder: well-known name (e.g. archive), display name, or folder ID"),
@@ -389,7 +418,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     description:
       "Move several messages to the same folder in one call. Resolves the destination once and returns a single summary instead of one result per message. Reports any failures individually.",
     parameters: z.object({
-      message_ids: z.array(z.string()).describe("Message IDs to move (max 50)"),
+      message_ids: z.array(z.string()).describe("Message IDs or scan_messages refs to move (max 50)"),
       destination: z
         .string()
         .describe("Destination folder: well-known name (e.g. archive), display name, or folder ID"),
@@ -524,6 +553,45 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       message_id: z.string().describe("The draft message ID to send"),
     }),
     execute: async (params) => unwrapResult(await sendDraft(params)),
+    domain: "mail",
+    readOnly: false,
+    annotations: { destructiveHint: true },
+  },
+  {
+    name: "update_draft",
+    description:
+      "Edit an unsent draft: its subject, body or recipients. Only fields you pass change. Refuses any " +
+      "message that is not a draft. Send it afterward with send_draft.",
+    parameters: z.object({
+      message_id: z.string().describe("The draft's message ID"),
+      subject: z.string().optional().describe("New subject"),
+      body: z.string().optional().describe("New body; replaces the whole body, including any quoted history"),
+      content_type: z.string().optional().describe("Body content type: Text or HTML (default: Text)"),
+      to: z
+        .string()
+        .optional()
+        .describe("Comma-separated email addresses; replaces the current To list. Empty string clears it"),
+      cc: z
+        .string()
+        .optional()
+        .describe("Comma-separated email addresses; replaces the current CC list. Empty string clears it"),
+      bcc: z
+        .string()
+        .optional()
+        .describe("Comma-separated email addresses; replaces the current BCC list. Empty string clears it"),
+    }),
+    execute: async (params) => unwrapResult(await updateDraft(params)),
+    domain: "mail",
+    readOnly: false,
+    annotations: { destructiveHint: true },
+  },
+  {
+    name: "delete_draft",
+    description: "Delete an unsent draft. Refuses any message that is not a draft.",
+    parameters: z.object({
+      message_id: z.string().describe("The draft's message ID"),
+    }),
+    execute: async (params) => unwrapResult(await deleteDraft(params)),
     domain: "mail",
     readOnly: false,
     annotations: { destructiveHint: true },
@@ -670,6 +738,25 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       event_id: z.string().describe("The event ID to delete"),
     }),
     execute: async (params) => unwrapResult(await deleteEvent(params)),
+    domain: "calendar",
+    readOnly: false,
+    annotations: { destructiveHint: true },
+  },
+  {
+    name: "respond_to_event",
+    description:
+      "Accept, decline or tentatively accept a meeting invitation. By default the organizer gets the " +
+      "response by email, with the comment if one is given.",
+    parameters: z.object({
+      event_id: z.string().describe("The event ID of the invitation"),
+      response: z.enum(["accept", "decline", "tentative"]).describe("How to respond"),
+      comment: z.string().optional().describe("Note to include in the response"),
+      send_response: z
+        .boolean()
+        .optional()
+        .describe("Send the response to the organizer (default: true). False updates only your calendar."),
+    }),
+    execute: async (params) => unwrapResult(await respondToEvent(params)),
     domain: "calendar",
     readOnly: false,
     annotations: { destructiveHint: true },
@@ -1035,9 +1122,23 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   {
     name: "send_chat_message",
     description:
-      "Send a message in a Teams chat. Use chat_id '48:notes' to send to the user's self-chat (notes to self).",
+      "Send a Teams chat message, either in an existing chat (chat_id) or to people by email (to). With " +
+      "to, one person reuses your one-on-one chat with them, or starts it; two or more start a new group " +
+      "chat every call, so reuse the returned chat_id for follow-ups. Use chat_id '48:notes' to send to " +
+      "the user's self-chat (notes to self).",
     parameters: z.object({
-      chat_id: z.string().describe("Chat ID. Use '48:notes' for the user's self-chat."),
+      chat_id: z
+        .string()
+        .optional()
+        .describe("Chat ID of an existing chat. Use '48:notes' for the user's self-chat. Pass this or to."),
+      to: z
+        .string()
+        .optional()
+        .describe(
+          "Comma-separated work email addresses or sign-in names of people in your organization (guests " +
+            "included) to message. Pass this or chat_id.",
+        ),
+      topic: z.string().optional().describe("Title for a new group chat (two or more people in to)"),
       content: z.string().describe("Message content"),
     }),
     execute: async (params) => unwrapResult(await sendChatMessage(params)),
@@ -1086,11 +1187,17 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
   },
   {
     name: "send_channel_message",
-    description: "Send a message to a Teams channel",
+    description: "Send a message to a Teams channel, or reply in a thread with reply_to_message_id",
     parameters: z.object({
       team_id: z.string().describe("Team ID"),
       channel_id: z.string().describe("Channel ID"),
       content: z.string().describe("Message content"),
+      reply_to_message_id: z
+        .string()
+        .optional()
+        .describe(
+          "ID of a top-level channel message to reply to, from list_channel_messages. Omit to start a new thread.",
+        ),
     }),
     execute: async (params) => unwrapResult(await sendChannelMessage(params)),
     domain: "teams",
@@ -1532,6 +1639,27 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     readOnly: false,
   },
 
+  {
+    name: "delete_todo_task",
+    description:
+      "Delete a To Do task. There is no API to restore it, so treat it as permanent. Deleting a repeating task ends the whole series and needs force: true.",
+    parameters: z.object({
+      list_id: z.string().describe("To Do list ID"),
+      task_id: z.string().describe("Task ID"),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          "Required to delete a repeating task, which ends the whole series rather than one occurrence. " +
+            "To stop it repeating but keep the task, use clear_recurrence on update_todo_task instead.",
+        ),
+    }),
+    execute: async (params) => unwrapResult(await deleteTodoTask(params)),
+    domain: "todo",
+    readOnly: false,
+    annotations: { destructiveHint: true },
+  },
+
   // === Graph Query (Escape Hatch) ===
   {
     name: "graph_query",
@@ -1540,7 +1668,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       method: z.string().describe("HTTP method: GET, POST, PUT, PATCH, or DELETE"),
       path: z.string().describe("Graph API path (e.g., /me/memberOf)"),
       body: z.string().optional().describe("JSON request body as a string"),
-      version: z.string().optional().describe("API version: v1.0 or beta (default: v1.0)"),
+      version: z.enum(["v1.0", "beta"]).optional().describe("API version: v1.0 or beta (default: v1.0)"),
       headers: z
         .record(z.string(), z.string())
         .optional()

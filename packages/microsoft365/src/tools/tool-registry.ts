@@ -42,19 +42,19 @@ export type ToolMeta = {
  */
 export const DOMAIN_DESCRIPTIONS: Record<ToolDomain, string> = {
   auth: "Authentication: Check auth status and manage tokens",
-  mail: "Mail: List, read, send, reply, search, and draft email messages",
-  calendar: "Calendar: List, view, create, update, and delete events",
+  mail: "Mail: List, read, send, reply, search, and draft email messages; edit and delete drafts",
+  calendar: "Calendar: List, view, create, update, and delete events; accept or decline invitations",
   contacts: "Contacts: List, view, create, and search contacts",
   files:
     "Files: List, view, search, download OneDrive files; create folders; upload files (see Upload workflows below)",
-  chats: "Chats: List Teams chats and messages; send chat messages",
-  teams: "Teams: List teams, channels, and messages; send channel messages",
+  chats: "Chats: List Teams chats and messages; send chat messages, starting a chat by email if needed",
+  teams: "Teams: List teams, channels, and messages; send channel messages and thread replies",
   meetings: "Meetings: List Teams meeting transcripts and read their text",
   users: "Users: View profiles and list users",
   groups: "Groups: List groups and group members",
   planner: "Planner: List plans and tasks; create and update tasks",
   onenote: "OneNote: List notebooks, sections, pages; read page content",
-  todo: "To Do: List task lists and tasks; create and update tasks",
+  todo: "To Do: List task lists and tasks; create, update, and delete tasks, including repeating ones",
   query: "Graph Query: Execute arbitrary Microsoft Graph API queries",
   rag: "Documents: Extract readable text from PDF, DOCX, XLSX and text files — in OneDrive, SharePoint, or attached to a message",
 }
@@ -91,6 +91,7 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "set_access_token", domain: "auth", readOnly: false, orgOnly: false },
   // Mail
   { name: "list_messages", domain: "mail", readOnly: true, orgOnly: false },
+  { name: "scan_messages", domain: "mail", readOnly: true, orgOnly: false },
   { name: "get_message", domain: "mail", readOnly: true, orgOnly: false },
   { name: "list_mail_folders", domain: "mail", readOnly: true, orgOnly: false },
   { name: "move_message", domain: "mail", readOnly: false, orgOnly: false },
@@ -106,6 +107,8 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "create_reply_all_draft", domain: "mail", readOnly: false, orgOnly: false },
   { name: "create_forward_draft", domain: "mail", readOnly: false, orgOnly: false },
   { name: "send_draft", domain: "mail", readOnly: false, orgOnly: false },
+  { name: "update_draft", domain: "mail", readOnly: false, orgOnly: false },
+  { name: "delete_draft", domain: "mail", readOnly: false, orgOnly: false },
   // Calendar
   { name: "list_events", domain: "calendar", readOnly: true, orgOnly: false },
   { name: "list_calendar_view", domain: "calendar", readOnly: true, orgOnly: false },
@@ -114,6 +117,7 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "create_event", domain: "calendar", readOnly: false, orgOnly: false },
   { name: "update_event", domain: "calendar", readOnly: false, orgOnly: false },
   { name: "delete_event", domain: "calendar", readOnly: false, orgOnly: false },
+  { name: "respond_to_event", domain: "calendar", readOnly: false, orgOnly: false },
   // Contacts
   { name: "list_contacts", domain: "contacts", readOnly: true, orgOnly: false },
   { name: "get_contact", domain: "contacts", readOnly: true, orgOnly: false },
@@ -180,6 +184,7 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "list_todo_tasks", domain: "todo", readOnly: true, orgOnly: false },
   { name: "create_todo_task", domain: "todo", readOnly: false, orgOnly: false },
   { name: "update_todo_task", domain: "todo", readOnly: false, orgOnly: false },
+  { name: "delete_todo_task", domain: "todo", readOnly: false, orgOnly: false },
   // Query
   { name: "graph_query", domain: "query", readOnly: false, orgOnly: false },
   // RAG
@@ -194,6 +199,10 @@ export type ToolFilterConfig = {
   readonly transport?: TransportMode
   readonly requireDraft?: boolean
 }
+
+// Read per call, not captured at import, so tests can set it. graph_query reads it too: hiding the
+// send_* tools alone would leave a raw POST /me/sendMail open.
+export const requireDraftEnabled = (): boolean => process.env.MS365_REQUIRE_DRAFT === "true"
 
 const DRAFT_BYPASS_TOOLS: ReadonlySet<string> = new Set([
   "send_message",

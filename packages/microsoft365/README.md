@@ -13,7 +13,7 @@ A Model Context Protocol (MCP) server for Microsoft 365 — manage email, calend
 
 ## Features
 
-- **73 Tools** across 12 Microsoft 365 domains + generic Graph API escape hatch
+- **74 Tools** across 12 Microsoft 365 domains + generic Graph API escape hatch
 - **5 Auth Modes**: Interactive, certificate, client secret, client-provided token, OAuth proxy
 - **Draft Workflow**: Create drafts for user review in Outlook, then send when approved
 - **Tool Filtering**: Presets, regex patterns, read-only mode, and org-mode gating
@@ -233,11 +233,12 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 
 ## Available Tools
 
-### Mail (16 tools)
+### Mail (19 tools)
 
 | Tool                     | Description                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `list_messages`          | List messages, all folders or one (`folder`), with optional filtering    |
+| `scan_messages`          | Scan compact headers with session refs and nextLink cursors              |
 | `get_message`            | Get a specific message with full body                                    |
 | `search_messages`        | Search messages by query                                                 |
 | `send_message`           | Send a new email                                                         |
@@ -249,16 +250,27 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `create_reply_all_draft` | Create a reply-all draft — threaded, with the original quoted underneath |
 | `create_forward_draft`   | Create a forward draft — original quoted, recipients you specify         |
 | `send_draft`             | Send an existing email draft                                             |
+| `update_draft`           | Edit a draft's subject, body or recipients (refuses non-drafts)          |
+| `delete_draft`           | Delete a draft (refuses non-drafts)                                      |
 | `list_attachments`       | List a message's attachments, with a read_document path for file ones    |
 | `list_mail_folders`      | List top-level mail folders with item, unread and subfolder counts       |
 | `move_message`           | Move a message to a well-known folder, a folder name, or a folder ID     |
 | `batch_move_messages`    | Move up to 50 messages to one folder in a single call                    |
 
+`scan_messages` returns a compact list of message headers. If there’s another page,
+it includes a `cursor` — pass that back on its own to continue the same scan, even if
+the last page was short or empty. Cursors and message refs work until the server restarts.
+
+Search stops at 1,000 results. To check every matching message, use a filter such as
+`hasAttachments eq true` and keep paging until there’s no cursor left.
+
 > The `create_*_draft` tools produce a properly threaded draft (same conversation, full
 > quoted history) for review, then send via `send_draft`. They remain available under
-> `MS365_REQUIRE_DRAFT=true`; the `send_*` tools are hidden in that mode.
+> `MS365_REQUIRE_DRAFT=true`; the `send_*` tools are hidden in that mode, and `graph_query`
+> refuses requests that send mail without a draft (`sendMail`, and `reply`, `replyAll` or
+> `forward` on a message, including inside a `$batch`).
 
-### Calendar (7 tools)
+### Calendar (8 tools)
 
 | Tool                        | Description                                                     |
 | --------------------------- | --------------------------------------------------------------- |
@@ -269,6 +281,7 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `create_event`              | Create a new event                                              |
 | `update_event`              | Update an existing event                                        |
 | `delete_event`              | Delete an event                                                 |
+| `respond_to_event`          | Accept, decline or tentatively accept an invitation             |
 
 ### Contacts (4 tools)
 
@@ -304,20 +317,24 @@ SharePoint tools use **delegated permissions** — users see only the sites and 
 
 ### Chats (3 tools, org mode)
 
-| Tool                 | Description                                            |
-| -------------------- | ------------------------------------------------------ |
-| `list_chats`         | List Teams chats by latest message, named              |
-| `list_chat_messages` | List chat messages as text, with flags and `since`     |
-| `send_chat_message`  | Send a message in a chat. Use `48:notes` for self-chat |
+| Tool                 | Description                                                                |
+| -------------------- | -------------------------------------------------------------------------- |
+| `list_chats`         | List Teams chats by latest message, named                                  |
+| `list_chat_messages` | List chat messages as text, with flags and `since`                         |
+| `send_chat_message`  | Send in a chat, or to people by email (`to`). Use `48:notes` for self-chat |
+
+> With `to`, one person reuses (or starts) your one-on-one chat with them. Two or more people
+> start a new group chat on every call, because Graph doesn't deduplicate group chats, so reuse
+> the returned chat ID for follow-ups.
 
 ### Teams (4 tools, org mode)
 
-| Tool                    | Description                  |
-| ----------------------- | ---------------------------- |
-| `list_teams`            | List joined teams            |
-| `list_channels`         | List channels in a team      |
-| `list_channel_messages` | List recent channel messages |
-| `send_channel_message`  | Send a message to a channel  |
+| Tool                    | Description                                                               |
+| ----------------------- | ------------------------------------------------------------------------- |
+| `list_teams`            | List joined teams                                                         |
+| `list_channels`         | List channels in a team                                                   |
+| `list_channel_messages` | List recent channel messages, with their IDs                              |
+| `send_channel_message`  | Send a message to a channel, or reply in a thread (`reply_to_message_id`) |
 
 ### Meeting Transcripts (2 tools, org mode)
 
@@ -368,7 +385,7 @@ Requires opt-in scopes that are **not** requested by default — see [Meeting tr
 > constrained HTML subset and silently drops unsupported CSS/tags, so a page can post
 > successfully yet render differently than the source.
 
-### To Do (4 tools)
+### To Do (5 tools)
 
 | Tool               | Description                         |
 | ------------------ | ----------------------------------- |
@@ -376,6 +393,7 @@ Requires opt-in scopes that are **not** requested by default — see [Meeting tr
 | `list_todo_tasks`  | List tasks in a list                |
 | `create_todo_task` | Create a task, optionally repeating |
 | `update_todo_task` | Update a task, or change its repeat |
+| `delete_todo_task` | Delete a task (no API undo)         |
 
 `create_todo_task` and `update_todo_task` take an optional `recurrence`, mapping to
 Graph's `patternedRecurrence`. Pass a `pattern` of `daily`, `weekly`,
@@ -387,6 +405,18 @@ The repeat runs forever unless `range_type` is `endDate` or `numbered`. A recurr
 task needs a `due_date`: To Do rolls the task forward from it, so without one the
 task repeats but never appears in Today. Pass `clear_recurrence` on an update to
 make a repeating task one-off again.
+
+**Completing a recurring task does not mark that task completed.** Graph rolls the
+same task id forward to the next due date and returns it as `notStarted`, while the
+completed occurrence becomes a _separate_ task with a new id. The task id you hold
+therefore refers to the live series, not one occurrence, and `update_todo_task` says
+so in its result rather than reporting a bare "Task updated" over a `notStarted` task.
+
+`delete_todo_task` has no undo through the API. Microsoft documents restoring a deleted
+task by hand from Outlook's Deleted Items folder, but that hasn't been checked for tasks
+deleted through Graph, so treat a delete as permanent. Because an id addresses the series, deleting a repeating task ends the whole
+series; that requires `force: true`, and the refusal points at `clear_recurrence` for
+the usual case of wanting the task to stop repeating without losing it.
 
 ### Auth & Utility (5 tools)
 
@@ -408,30 +438,56 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 
 ## Environment Variables
 
-| Variable                  | Description                                                                             | Default             |
-| ------------------------- | --------------------------------------------------------------------------------------- | ------------------- |
-| `MS365_AUTH_MODE`         | Auth mode: `interactive`, `certificate`, `client-secret`, `client-token`, `oauth-proxy` | `interactive`       |
-| `MS365_TENANT_ID`         | Azure AD tenant ID                                                                      | `common`            |
-| `MS365_CLIENT_ID`         | Azure AD application (client) ID                                                        | --                  |
-| `MS365_CLIENT_SECRET`     | Client secret (for `client-secret` and `oauth-proxy` modes)                             | --                  |
-| `MS365_CERT_PATH`         | Certificate path (for `certificate` mode)                                               | --                  |
-| `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                         | --                  |
-| `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                          | --                  |
-| `MS365_USE_DEVICE_CODE`   | Skip the browser in `interactive` mode and use device code                              | `false`             |
-| `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                           | --                  |
-| `MS365_GRAPH_VERSION`     | Graph API version: `v1.0` or `beta`                                                     | `v1.0`              |
-| `TRANSPORT_TYPE`          | Transport: `stdio` or `httpStream`                                                      | `stdio`             |
-| `PORT`                    | HTTP server port                                                                        | `3000`              |
-| `HOST`                    | HTTP server host                                                                        | `127.0.0.1`         |
-| `MS365_PRESETS`           | Comma-separated presets: `personal`, `collaboration`, `productivity`, `rag`, `all`      | -- (all tools)      |
-| `MS365_EXTRA_SCOPES`      | Comma-separated Graph scopes added to the requested set (OAuth proxy mode)              | --                  |
-| `MS365_MAX_EXTRACT_BYTES` | Ceiling over `read_document`'s per-format input caps, in bytes. Never raises them.      | -- (per-format)     |
-| `MS365_ENABLED_TOOLS`     | Regex pattern to filter tools                                                           | --                  |
-| `MS365_READ_ONLY`         | Hide write tools                                                                        | `false`             |
-| `MS365_ORG_MODE`          | Enable org-only tools (teams, chats, groups, planner)                                   | `false`             |
-| `MS365_REQUIRE_DRAFT`     | Hide all `send_*` mail tools; force the `create_*_draft` + `send_draft` flow            | `false`             |
-| `TOKEN_STORAGE_PATH`      | Directory for persistent OAuth token storage                                            | `/tmp/ms365-tokens` |
-| `FASTMCP_HOST`            | Bind address for HTTP server (set `0.0.0.0` in containers)                              | `localhost`         |
+| Variable                  | Description                                                                                                               | Default             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `MS365_AUTH_MODE`         | Auth mode: `interactive`, `certificate`, `client-secret`, `client-token`, `oauth-proxy`                                   | `interactive`       |
+| `MS365_TENANT_ID`         | Azure AD tenant ID                                                                                                        | `common`            |
+| `MS365_CLIENT_ID`         | Azure AD application (client) ID                                                                                          | --                  |
+| `MS365_CLIENT_SECRET`     | Client secret (for `client-secret` and `oauth-proxy` modes)                                                               | --                  |
+| `MS365_CERT_PATH`         | Certificate path (for `certificate` mode)                                                                                 | --                  |
+| `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                                                           | --                  |
+| `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                                                            | --                  |
+| `MS365_USE_DEVICE_CODE`   | Skip the browser in `interactive` mode and use device code                                                                | `false`             |
+| `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                                                             | --                  |
+| `MS365_GRAPH_VERSION`     | Graph API version: `v1.0` or `beta`                                                                                       | `v1.0`              |
+| `TRANSPORT_TYPE`          | Transport: `stdio` or `httpStream`                                                                                        | `stdio`             |
+| `PORT`                    | HTTP server port                                                                                                          | `3000`              |
+| `HOST`                    | HTTP server host                                                                                                          | `127.0.0.1`         |
+| `MS365_PRESETS`           | Comma-separated presets: `personal`, `collaboration`, `productivity`, `rag`, `all`                                        | -- (all tools)      |
+| `MS365_EXTRA_SCOPES`      | Comma-separated Graph scopes added to the requested set (OAuth proxy mode)                                                | --                  |
+| `MS365_MAX_EXTRACT_BYTES` | Ceiling over `read_document`'s per-format input caps, in bytes. Never raises them.                                        | -- (per-format)     |
+| `MS365_ENABLED_TOOLS`     | Regex pattern to filter tools                                                                                             | --                  |
+| `MS365_READ_ONLY`         | Hide write tools                                                                                                          | `false`             |
+| `MS365_ORG_MODE`          | Enable org-only tools (teams, chats, groups, planner)                                                                     | `false`             |
+| `MS365_REQUIRE_DRAFT`     | Hide all `send_*` mail tools and block direct sends through `graph_query`; force the `create_*_draft` + `send_draft` flow | `false`             |
+| `TOKEN_STORAGE_PATH`      | Directory for persistent OAuth token storage                                                                              | `/tmp/ms365-tokens` |
+| `FASTMCP_HOST`            | Bind address for HTTP server (set `0.0.0.0` in containers)                                                                | `localhost`         |
+
+### Graph resilience
+
+Every Graph call goes through a retry / timeout / circuit-breaker layer. The defaults suit
+normal use; these knobs exist for tuning a deployment without a code change.
+
+| Variable                          | Description                                                          | Default  |
+| --------------------------------- | -------------------------------------------------------------------- | -------- |
+| `MS365_GRAPH_MAX_RETRIES`         | Retries for a throttled (429) or transient (503/504/network) call    | `3`      |
+| `MS365_GRAPH_TIMEOUT_MS`          | Per-attempt fetch timeout. Sized for slow large uploads              | `100000` |
+| `MS365_GRAPH_BASE_BACKOFF_MS`     | Base for exponential backoff with full jitter                        | `200`    |
+| `MS365_GRAPH_MAX_BACKOFF_MS`      | Backoff ceiling. A 429's `Retry-After` overrides it (capped at 60 s) | `5000`   |
+| `MS365_GRAPH_CIRCUIT_THRESHOLD`   | Consecutive failures before the breaker opens                        | `5`      |
+| `MS365_GRAPH_CIRCUIT_COOLDOWN_MS` | How long the breaker stays open before allowing a probe              | `30000`  |
+| `MS365_GRAPH_CIRCUIT_DISABLED`    | Disable the breaker entirely                                         | `false`  |
+
+Throttling (429) never counts toward the process-wide circuit breaker. Only
+503/504 responses, timeouts and network errors count as breaker failures.
+
+A 429 is retried on every method — Graph decides to throttle before it executes the
+operation, so nothing has landed server-side. A 503/504/network failure is retried only
+for idempotent methods (GET/HEAD/PUT/DELETE); retrying a POST or PATCH there could
+duplicate a side effect that already succeeded, so those surface to the caller instead.
+
+When the breaker is open, calls fail fast as a `throttle` error carrying `retryAfter`,
+rather than adding load to an upstream that is already failing.
 
 ## Claude Desktop (Local Installation)
 

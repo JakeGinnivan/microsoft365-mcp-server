@@ -478,7 +478,7 @@ export const formatChannelMessageSummary = (msg: GraphChannelMessage): string =>
       () => "",
       (v) => v,
     )
-  return `- **${from}** (${msg.createdDateTime ?? ""}): ${content}`
+  return `- **${from}** (${msg.createdDateTime ?? ""}): ${content} (ID: ${msg.id})`
 }
 
 export const formatChannelMessageList = (msgs: ReadonlyArray<GraphChannelMessage>): string =>
@@ -807,3 +807,62 @@ export const formatAuthStatus = (status: {
 
 ## Scopes
 ${status.scopes.length > 0 ? status.scopes.map((s) => `- ${s}`).join("\n") : "No scopes available"}`
+
+// Compact scan format. Optimised for one job: letting a caller read thousands of
+// message headers cheaply enough to decide which handful to open properly.
+//
+// Rows are pipe-delimited rather than markdown because the markdown list form spends
+// roughly a third of each row on bullets, bold markers and field labels that repeat
+// identically on every line. Measured against a real mailbox, 500 messages cost about
+// 32,000 tokens in the standard list format and about 9,600 here — the difference
+// between scanning a 15,000-message archive and giving up on it.
+//
+// The `ref` is a short session-local handle (see message-refs), not a Graph ID.
+export const formatMessageScanRow = (msg: GraphMessage, ref: string): string => {
+  const from = Option(msg.from?.emailAddress.name).fold(
+    () => msg.from?.emailAddress.address ?? "Unknown",
+    (v) => v,
+  )
+
+  // Minute precision: triage groups by day, and seconds are never the deciding factor.
+  const received = msg.receivedDateTime?.slice(0, 16) ?? ""
+
+  // Single-character flags keep the common case (no flags) to one empty column.
+  const flags = `${msg.isRead === false ? "U" : ""}${msg.hasAttachments ? "A" : ""}`
+
+  // Subjects are the one field worth spending characters on — it is what the caller
+  // actually filters against — but a runaway subject line shouldn't blow the budget.
+  const subject = (msg.subject ?? "(No Subject)").replace(/[\r\n|]+/g, " ").slice(0, 120)
+
+  return `${ref}|${received}|${from.replace(/[|]/g, " ").slice(0, 40)}|${subject}|${flags}`
+}
+
+export const formatMessageScan = (
+  messages: ReadonlyArray<GraphMessage>,
+  refs: ReadonlyArray<string>,
+  meta: {
+    readonly folder?: string
+    readonly nextCursor?: string
+    readonly searched?: boolean
+  },
+): string => {
+  const scope = meta.folder ? ` in ${meta.folder}` : ""
+  const header =
+    messages.length === 0
+      ? "No messages found on this page."
+      : [
+          `# Message scan — ${messages.length}${scope}`,
+          "",
+          "ref|received|from|subject|flags   (flags: U=unread, A=has attachments)",
+          "Pass a ref to get_message, list_attachments, move_message or batch_move_messages in place of the message ID.",
+          "",
+        ].join("\n")
+  const rows = messages.map((msg, i) => formatMessageScanRow(msg, refs[i]!)).join("\n")
+  const more = meta.nextCursor
+    ? `\n\n**INCOMPLETE — more results exist.** Re-run scan_messages with cursor: "${meta.nextCursor}" alone to continue.`
+    : "\n\nEnd of results for this query (Graph returned no nextLink)."
+  const coverage = meta.searched
+    ? '\n\nSearch returns at most 1,000 results. Exhausting a search does not establish mailbox coverage; use filter (e.g. "hasAttachments eq true") and follow every cursor for a full scan.'
+    : ""
+  return `${header}${rows}${more}${coverage}`
+}
