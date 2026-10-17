@@ -1,0 +1,77 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { loadEnvFileIfPresent } from "../src/utils/env-file"
+
+const dir = mkdtempSync(join(tmpdir(), "env-file-"))
+
+afterEach(() => vi.unstubAllEnvs())
+
+describe("loadEnvFileIfPresent", () => {
+  // Docker and Claude Desktop installs have no .env; that must not stop the server starting.
+  it("ignores a missing file", () => {
+    expect(() => loadEnvFileIfPresent(join(dir, "missing.env"))).not.toThrow()
+  })
+
+  it("loads variables from the file", () => {
+    const file = join(dir, "load.env")
+    writeFileSync(file, 'ENV_FILE_TEST_A=from_file\nENV_FILE_TEST_B="quoted # kept"\n')
+    vi.stubEnv("ENV_FILE_TEST_A", undefined)
+    vi.stubEnv("ENV_FILE_TEST_B", undefined)
+
+    loadEnvFileIfPresent(file)
+
+    expect(process.env.ENV_FILE_TEST_A).toBe("from_file")
+    expect(process.env.ENV_FILE_TEST_B).toBe("quoted # kept")
+  })
+
+  // dotenv's behaviour, which deployments rely on: a real environment variable beats the file.
+  it("keeps a variable already set in the environment", () => {
+    const file = join(dir, "override.env")
+    writeFileSync(file, "ENV_FILE_TEST_C=from_file\n")
+    vi.stubEnv("ENV_FILE_TEST_C", "from_shell")
+
+    loadEnvFileIfPresent(file)
+
+    expect(process.env.ENV_FILE_TEST_C).toBe("from_shell")
+  })
+
+  it("keeps a variable already set to an empty string", () => {
+    const file = join(dir, "empty.env")
+    writeFileSync(file, "ENV_FILE_TEST_D=from_file\n")
+    vi.stubEnv("ENV_FILE_TEST_D", "")
+
+    loadEnvFileIfPresent(file)
+
+    expect(process.env.ENV_FILE_TEST_D).toBe("")
+  })
+
+  // Windows editors can save a byte-order mark, which would otherwise become part of the first key.
+  it("reads the first variable of a file that starts with a byte-order mark", () => {
+    const file = join(dir, "bom.env")
+    writeFileSync(file, "\uFEFFENV_FILE_TEST_E=first\n")
+    vi.stubEnv("ENV_FILE_TEST_E", undefined)
+
+    loadEnvFileIfPresent(file)
+
+    expect(process.env.ENV_FILE_TEST_E).toBe("first")
+  })
+
+  // Only a missing file is normal. A .env that is there but can't be read is a setup mistake.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reports a .env it can't read", () => {
+    const file = join(dir, "locked.env")
+    writeFileSync(file, "ENV_FILE_TEST_F=x\n")
+    chmodSync(file, 0o000)
+
+    expect(() => loadEnvFileIfPresent(file)).toThrow(expect.objectContaining({ code: "EACCES" }))
+  })
+
+  it("reports a .env path that is a directory", () => {
+    expect(() => loadEnvFileIfPresent(dir)).toThrow(expect.objectContaining({ code: "EISDIR" }))
+  })
+})
+
+process.on("exit", () => rmSync(dir, { recursive: true, force: true }))
