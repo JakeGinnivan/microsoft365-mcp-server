@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { UserError } from "fastmcp"
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
@@ -9,8 +11,23 @@ import {
   formatMailFolderList,
   formatMessageDetail,
   formatMessageList,
+  formatMessageScan,
   MESSAGE_SUMMARY_FIELDS,
 } from "../utils/formatters"
+import { rememberMessageId, resolveMessageIdOrRef } from "../utils/message-refs"
+
+// scan_messages hands back short refs instead of 152-character Graph IDs. Every tool
+// used in the scan-then-act loop resolves refs before calling Graph.
+const resolveMessageId = (idOrRef: string): Either<UserError, string> => {
+  const resolved = resolveMessageIdOrRef(idOrRef)
+  return resolved
+    ? Right(resolved)
+    : Left(
+        new UserError(
+          `Unknown message ref "${idOrRef}". Refs come from scan_messages and last for the session — re-run the scan to refresh them.`,
+        ),
+      )
+}
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -81,7 +98,10 @@ export const getMessage = async (params: {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  const result = await client.getMessage(params.message_id, params.body_format)
+  const messageId = resolveMessageId(params.message_id)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+
+  const result = await client.getMessage(messageId.orThrow(), params.body_format)
   return result.mapLeft((error) => new UserError(`Failed to get message: ${error.message}`)).map(formatMessageDetail)
 }
 
@@ -169,11 +189,14 @@ export const moveMessage = async (params: {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
+  const messageId = resolveMessageId(params.message_id)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+
   const destination = await resolveDestination(client, params.destination)
   if (destination.isLeft()) return Left(destination.value as UserError)
   const target = destination.orThrow()
 
-  const result = await client.moveMessage(params.message_id, target.id)
+  const result = await client.moveMessage(messageId.orThrow(), target.id)
   // Deliberately terse: triage moves messages in batches, and echoing each message body
   // back (formatMessageDetail) floods an LLM caller's context with mail the caller has
   // already decided to file. Subject and destination are enough to confirm the move.
@@ -196,10 +219,13 @@ export const listAttachments = async (params: { message_id: string }): Promise<E
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  const result = await client.listAttachments(params.message_id)
+  const messageId = resolveMessageId(params.message_id)
+  if (messageId.isLeft()) return messageId as Either<UserError, string>
+  const id = messageId.orThrow()
+  const result = await client.listAttachments(id)
   return result
     .mapLeft((error) => new UserError(`Failed to list attachments: ${error.message}`))
-    .map((response) => formatAttachmentList(params.message_id, (response as ODataResponse<GraphAttachment>).value))
+    .map((response) => formatAttachmentList(id, (response as ODataResponse<GraphAttachment>).value))
 }
 
 // Graph has no bulk-move endpoint, so this is still one request per message — but it
@@ -244,7 +270,9 @@ export const batchMoveMessages = async (params: {
   // parallel batch leaves the caller unsure which moves actually landed. Reducing over
   // a promise chain keeps that ordering without an imperative loop.
   const moveOne = async (id: string): Promise<MoveOutcome> => {
-    const result = await client.moveMessage(id, target.id)
+    const resolved = resolveMessageIdOrRef(id)
+    if (!resolved) return { id, error: "Unknown message ref — re-run scan_messages to refresh" }
+    const result = await client.moveMessage(resolved, target.id)
     return result.fold<MoveOutcome>(
       (error) => ({ id, error: error.message, throttled: error.type === "throttle" }),
       (msg) => ({ id, subject: msg.subject }),
@@ -471,4 +499,82 @@ export const searchMessages = async (params: { query: string; top?: number }): P
   return result
     .mapLeft((error) => new UserError(`Failed to search messages: ${error.message}`))
     .map((response) => formatMessageList((response as ODataResponse<never>).value))
+}
+
+// Only the fields the scan actually prints. Graph returns the full message
+// otherwise — including bodyPreview, which alone can be several hundred characters
+// per message and is the single biggest waste when scanning thousands of headers.
+const SCAN_FIELDS = ["id", "subject", "from", "receivedDateTime", "isRead", "hasAttachments"] as const
+
+// Keep Graph continuation URLs server-side, including the original scan context.
+// Cursors belong to the client that issued them and cannot become arbitrary URLs.
+const scanCursors = new Map<
+  string,
+  {
+    client: NonNullable<ReturnType<typeof requireClient>>
+    nextLink: string
+    folder?: string
+    searched: boolean
+  }
+>()
+
+export const scanMessages = async (params: {
+  folder?: string
+  filter?: string
+  search?: string
+  top?: number
+  cursor?: string
+}): Promise<Either<UserError, string>> => {
+  const client = requireClient()
+  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  if (
+    params.cursor !== undefined &&
+    [params.folder, params.filter, params.search, params.top].some((value) => value !== undefined)
+  ) {
+    return Left(new UserError("Pass cursor alone to continue a scan; start a new scan to change its parameters."))
+  }
+  const continuation = params.cursor === undefined ? undefined : scanCursors.get(params.cursor)
+  if (params.cursor !== undefined && continuation?.client !== client) {
+    return Left(new UserError("Unknown or expired scan cursor. Re-run the original scan to start again."))
+  }
+  if (params.top !== undefined && (!Number.isInteger(params.top) || params.top < 1 || params.top > 1000)) {
+    return Left(new UserError("top must be an integer between 1 and 1000."))
+  }
+
+  const resolved = !continuation && params.folder ? await resolveDestination(client, params.folder) : undefined
+  if (resolved?.isLeft()) return Left(resolved.value as UserError)
+  const folder = continuation?.folder ?? params.folder
+  const searched = continuation?.searched ?? params.search !== undefined
+  const result = continuation
+    ? await client.nextMessageScanPage(continuation.nextLink)
+    : await client.listMessages(
+        {
+          $select: [...SCAN_FIELDS],
+          $filter: params.filter,
+          $search: params.search,
+          $top: params.top ?? 100,
+          // Avoid InefficientFilter: arbitrary filters need not match a date ordering.
+          $orderby: params.search || params.filter ? undefined : "receivedDateTime desc",
+        },
+        resolved?.orThrow().id,
+      )
+
+  return result
+    .mapLeft((error) => new UserError(`Failed to scan messages: ${error.message}`))
+    .map((response) => {
+      const page = response as ODataResponse<GraphMessage>
+      const nextLink = page["@odata.nextLink"]
+      const nextCursor = nextLink ? randomUUID() : undefined
+      if (nextCursor && nextLink) scanCursors.set(nextCursor, { client, nextLink, folder, searched })
+      return formatMessageScan(
+        page.value,
+        page.value.map((msg) => rememberMessageId(msg.id)),
+        {
+          folder,
+          nextCursor,
+          searched,
+        },
+      )
+    })
 }

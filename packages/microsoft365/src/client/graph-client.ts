@@ -70,6 +70,23 @@ const createGraphClient = (auth: AuthStrategy) => {
   const listMailFolders = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphMailFolder>>("GET", "/me/mailFolders", { odataParams })
 
+  // Only follow Graph-issued mail collection links; never send a bearer token to another host.
+  const nextMessageScanPage = (nextLink: string) => {
+    const url = URL.canParse(nextLink) ? new URL(nextLink) : undefined
+    const match = /^\/(v1\.0|beta)(\/me\/(?:mailFolders\/[^/]+\/)?messages)$/.exec(url?.pathname ?? "")
+    if (url?.origin !== GRAPH_API_BASE || url.username || url.password || url.hash || !match) {
+      return Promise.resolve(
+        Left<GraphApiError, ODataResponse<GraphMessage>>({
+          type: "api",
+          message: "Invalid Graph message continuation URL.",
+        }),
+      )
+    }
+    return request<ODataResponse<GraphMessage>>("GET", `${match[2]}${url.search}`, {
+      version: match[1] as GraphApiVersion,
+    })
+  }
+
   const moveMessage = (id: string, destinationId: string) =>
     request<GraphMessage>("POST", `/me/messages/${id}/move`, { body: { destinationId } })
 
@@ -479,6 +496,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     // Mail
     listMessages,
     listAllMessages,
+    nextMessageScanPage,
     getMessage,
     listMailFolders,
     moveMessage,

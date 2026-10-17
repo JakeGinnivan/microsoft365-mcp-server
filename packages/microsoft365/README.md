@@ -223,11 +223,12 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 
 ## Available Tools
 
-### Mail (16 tools)
+### Mail (17 tools)
 
 | Tool                     | Description                                                              |
 | ------------------------ | ------------------------------------------------------------------------ |
 | `list_messages`          | List messages, all folders or one (`folder`), with optional filtering    |
+| `scan_messages`          | Scan compact headers with session refs and nextLink cursors              |
 | `get_message`            | Get a specific message with full body                                    |
 | `search_messages`        | Search messages by query                                                 |
 | `send_message`           | Send a new email                                                         |
@@ -243,6 +244,13 @@ Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listi
 | `list_mail_folders`      | List top-level mail folders with item, unread and subfolder counts       |
 | `move_message`           | Move a message to a well-known folder, a folder name, or a folder ID     |
 | `batch_move_messages`    | Move up to 50 messages to one folder in a single call                    |
+
+`scan_messages` returns a compact list of message headers. If there’s another page,
+it includes a `cursor` — pass that back on its own to continue the same scan, even if
+the last page was short or empty. Cursors and message refs work until the server restarts.
+
+Search stops at 1,000 results. To check every matching message, use a filter such as
+`hasAttachments eq true` and keep paging until there’s no cursor left.
 
 > The `create_*_draft` tools produce a properly threaded draft (same conversation, full
 > quoted history) for review, then send via `send_draft`. They remain available under
