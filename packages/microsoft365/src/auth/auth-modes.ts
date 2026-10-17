@@ -43,6 +43,17 @@ export const createCredential = (config: AuthConfig): Either<AuthError, TokenCre
   }
 }
 
+const createDeviceCodeCredential = (tenantId: string | undefined, clientId: string): TokenCredential =>
+  new DeviceCodeCredential({
+    tenantId,
+    clientId,
+    userPromptCallback: (info) => {
+      console.error(`\nAuthentication Required:`)
+      console.error(`Please visit: ${info.verificationUri}`)
+      console.error(`And enter code: ${info.userCode}\n`)
+    },
+  }) as TokenCredential
+
 const createInteractiveCredential = (
   config: Extract<AuthConfig, { mode: "interactive" }>,
 ): Either<AuthError, TokenCredential> => {
@@ -52,26 +63,21 @@ const createInteractiveCredential = (
     return Left<AuthError, TokenCredential>({ type: "config", message: "Interactive mode requires MS365_CLIENT_ID" })
   }
 
-  return tryCredential(() => {
-    try {
-      return new InteractiveBrowserCredential({
+  // Opt out of the browser entirely: headless hosts, SSH sessions, or a machine whose
+  // default browser cannot be launched on demand.
+  if (config.useDeviceCode) {
+    return tryCredential(() => createDeviceCodeCredential(tenantId, clientId), "device code")
+  }
+
+  return tryCredential(
+    () =>
+      new InteractiveBrowserCredential({
         tenantId,
         clientId,
         redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
-      }) as TokenCredential
-    } catch {
-      // Fallback to device code flow for headless environments
-      return new DeviceCodeCredential({
-        tenantId,
-        clientId,
-        userPromptCallback: (info) => {
-          console.error(`\nAuthentication Required:`)
-          console.error(`Please visit: ${info.verificationUri}`)
-          console.error(`And enter code: ${info.userCode}\n`)
-        },
-      }) as TokenCredential
-    }
-  }, "interactive")
+      }) as TokenCredential,
+    "interactive",
+  )
 }
 
 const createCertificateCredential = (
