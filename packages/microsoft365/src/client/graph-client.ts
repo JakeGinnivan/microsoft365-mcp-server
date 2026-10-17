@@ -105,6 +105,15 @@ const createGraphClient = (auth: AuthStrategy) => {
 
   const sendDraft = (messageId: string) => request<Record<string, never>>("POST", `/me/messages/${messageId}/send`)
 
+  // Draft edits and deletes check isDraft first, so this fetches only what that check needs.
+  const getDraftState = (id: string) =>
+    request<GraphMessage>("GET", `/me/messages/${id}`, { odataParams: { $select: ["id", "isDraft", "subject"] } })
+
+  const updateMessage = (id: string, changes: Record<string, unknown>) =>
+    request<GraphMessage>("PATCH", `/me/messages/${id}`, { body: changes })
+
+  const deleteMessage = (id: string) => request<Record<string, never>>("DELETE", `/me/messages/${id}`)
+
   const sendReply = (id: string, comment: string) =>
     request<Record<string, never>>("POST", `/me/messages/${id}/reply`, { body: { comment } })
 
@@ -156,6 +165,13 @@ const createGraphClient = (auth: AuthStrategy) => {
     request<GraphEvent>("PATCH", `/me/events/${id}`, { body: event })
 
   const deleteEvent = (id: string) => request<Record<string, never>>("DELETE", `/me/events/${id}`)
+
+  // accept, decline and tentativelyAccept take the same body; Graph answers 202 with no content.
+  const respondToEvent = (
+    id: string,
+    action: "accept" | "decline" | "tentativelyAccept",
+    body: { comment?: string; sendResponse: boolean },
+  ) => request<Record<string, never>>("POST", `/me/events/${id}/${action}`, { body })
 
   // findMeetingTimes suggests slots where attendees are free. POST body; Prefer header forces
   // UTC in the response so callers don't get mailbox-local times back unexpectedly.
@@ -308,6 +324,12 @@ const createGraphClient = (auth: AuthStrategy) => {
       body: { body: { content } },
     })
 
+  // Graph only accepts replies to a top-level channel message, not to another reply.
+  const replyToChannelMessage = (teamId: string, channelId: string, messageId: string, content: string) =>
+    request<GraphChannelMessage>("POST", `/teams/${teamId}/channels/${channelId}/messages/${messageId}/replies`, {
+      body: { body: { content } },
+    })
+
   // Chats
   const listChats = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphChat>>("GET", "/me/chats", { odataParams })
@@ -320,12 +342,32 @@ const createGraphClient = (auth: AuthStrategy) => {
       body: { body: { contentType, content } },
     })
 
+  // Graph returns the existing chat for a one-on-one pair, but creates a new group chat every call.
+  const createChat = (chat: Record<string, unknown>) => request<GraphChat>("POST", "/chats", { body: chat })
+
   // Users & Groups
   const getMe = () => request<GraphUser>("GET", "/me")
 
   const listUsers = (odataParams?: ODataParams) => request<ODataResponse<GraphUser>>("GET", "/users", { odataParams })
 
   const getUser = (id: string) => request<GraphUser>("GET", `/users/${id}`)
+
+  // /users/{key} accepts an ID or a user principal name, not an email address, so an address that
+  // differs from the UPN needs the mail filter below. A guest UPN contains "#EXT#", and "#" would
+  // otherwise end the path.
+  const CHAT_MEMBER_FIELDS = ["id", "displayName", "mail", "userPrincipalName", "userType"]
+
+  const getUserByKey = (key: string) =>
+    request<GraphUser>("GET", `/users/${key.replace(/#/g, "%23")}`, { odataParams: { $select: CHAT_MEMBER_FIELDS } })
+
+  // userType is only returned when selected, and the caller needs it too: an in-tenant guest must
+  // join a chat as a guest, the caller included.
+  const getMeAsChatMember = () => request<GraphUser>("GET", "/me", { odataParams: { $select: CHAT_MEMBER_FIELDS } })
+
+  const findUsersByMail = (address: string) =>
+    request<ODataResponse<GraphUser>>("GET", "/users", {
+      odataParams: { $filter: `mail eq '${address.replace(/'/g, "''")}'`, $select: CHAT_MEMBER_FIELDS },
+    })
 
   const listGroups = (odataParams?: ODataParams) =>
     request<ODataResponse<GraphGroup>>("GET", "/groups", { odataParams })
@@ -505,6 +547,9 @@ const createGraphClient = (auth: AuthStrategy) => {
     sendMessage,
     createDraft,
     sendDraft,
+    getDraftState,
+    updateMessage,
+    deleteMessage,
     sendReply,
     sendReplyAll,
     sendForward,
@@ -519,6 +564,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     createEvent,
     updateEvent,
     deleteEvent,
+    respondToEvent,
     findMeetingTimes,
     // Contacts
     listContacts,
@@ -547,15 +593,20 @@ const createGraphClient = (auth: AuthStrategy) => {
     listChats,
     listChatMessages,
     sendChatMessage,
+    createChat,
     // Teams
     listTeams,
     listChannels,
     listChannelMessages,
     sendChannelMessage,
+    replyToChannelMessage,
     // Users & Groups
     getMe,
     listUsers,
     getUser,
+    getUserByKey,
+    getMeAsChatMember,
+    findUsersByMail,
     listGroups,
     getGroup,
     listGroupMembers,

@@ -1,0 +1,429 @@
+import { Some } from "functype"
+import { Left, Right } from "functype/either"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("../src/client/graph-client", () => ({
+  getGraphClient: vi.fn(),
+}))
+
+import { getGraphClient } from "../src/client/graph-client"
+import { respondToEvent } from "../src/tools/calendar-tools"
+import { sendChatMessage } from "../src/tools/chat-tools"
+import { deleteDraft, updateDraft } from "../src/tools/mail-tools"
+import { sendChannelMessage } from "../src/tools/teams-tools"
+import { formatChannelMessageSummary } from "../src/utils/formatters"
+
+const mockClient = {
+  getDraftState: vi.fn(),
+  updateMessage: vi.fn(),
+  deleteMessage: vi.fn(),
+  respondToEvent: vi.fn(),
+  sendChannelMessage: vi.fn(),
+  replyToChannelMessage: vi.fn(),
+  getMeAsChatMember: vi.fn(),
+  getUserByKey: vi.fn(),
+  findUsersByMail: vi.fn(),
+  createChat: vi.fn(),
+  sendChatMessage: vi.fn(),
+}
+
+const message = (result: { fold: (l: (e: Error) => string, r: (v: string) => string) => string }): string =>
+  result.fold(
+    (e) => e.message,
+    (v) => v,
+  )
+
+const ME = { id: "me-id", mail: "jordan@civala.com", userPrincipalName: "jordan@civala.com" }
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(getGraphClient).mockReturnValue(Some(mockClient as never))
+})
+
+describe("updateDraft", () => {
+  it("should send only the fields passed", async () => {
+    mockClient.getDraftState.mockResolvedValue(Right({ id: "d1", isDraft: true }))
+    mockClient.updateMessage.mockResolvedValue(Right({ id: "d1", subject: "New" }))
+
+    const result = await updateDraft({ message_id: "d1", subject: "New", body: "Hi", cc: "a@x.com, b@x.com" })
+
+    expect(result.isRight()).toBe(true)
+    expect(mockClient.updateMessage).toHaveBeenCalledWith("d1", {
+      subject: "New",
+      body: { contentType: "Text", content: "Hi" },
+      ccRecipients: [{ emailAddress: { address: "a@x.com" } }, { emailAddress: { address: "b@x.com" } }],
+    })
+  })
+
+  it("should clear a recipient list given an empty string", async () => {
+    mockClient.getDraftState.mockResolvedValue(Right({ id: "d1", isDraft: true }))
+    mockClient.updateMessage.mockResolvedValue(Right({ id: "d1" }))
+
+    await updateDraft({ message_id: "d1", bcc: "" })
+
+    expect(mockClient.updateMessage).toHaveBeenCalledWith("d1", { bccRecipients: [] })
+  })
+
+  // PATCH on a received message can still change some properties, so the draft check is the guard.
+  it("should refuse a message that is not a draft, without changing it", async () => {
+    mockClient.getDraftState.mockResolvedValue(Right({ id: "m1", isDraft: false }))
+
+    const result = await updateDraft({ message_id: "m1", subject: "Changed" })
+
+    expect(message(result)).toContain("is not a draft")
+    expect(mockClient.updateMessage).not.toHaveBeenCalled()
+  })
+
+  it("should refuse a call with nothing to change, without reading the message", async () => {
+    const result = await updateDraft({ message_id: "d1" })
+
+    expect(message(result)).toContain("Nothing to change")
+    expect(mockClient.getDraftState).not.toHaveBeenCalled()
+  })
+
+  it("should report a failed read instead of guessing", async () => {
+    mockClient.getDraftState.mockResolvedValue(Left({ message: "Not found" }))
+
+    const result = await updateDraft({ message_id: "gone", subject: "x" })
+
+    expect(message(result)).toContain("Failed to read message: Not found")
+    expect(mockClient.updateMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe("deleteDraft", () => {
+  it("should delete a draft and name it", async () => {
+    mockClient.getDraftState.mockResolvedValue(Right({ id: "d1", isDraft: true, subject: "Quarterly update" }))
+    mockClient.deleteMessage.mockResolvedValue(Right({}))
+
+    const result = await deleteDraft({ message_id: "d1" })
+
+    expect(message(result)).toBe('Draft "Quarterly update" deleted.')
+    expect(mockClient.deleteMessage).toHaveBeenCalledWith("d1")
+  })
+
+  // DELETE works on any message, so without the check this would be a general delete tool.
+  it("should refuse a message that is not a draft, without deleting it", async () => {
+    mockClient.getDraftState.mockResolvedValue(Right({ id: "m1", isDraft: false }))
+
+    const result = await deleteDraft({ message_id: "m1" })
+
+    expect(message(result)).toContain("is not a draft")
+    expect(mockClient.deleteMessage).not.toHaveBeenCalled()
+  })
+
+  it("should treat a missing isDraft as not a draft", async () => {
+    mockClient.getDraftState.mockResolvedValue(Right({ id: "m1" }))
+
+    const result = await deleteDraft({ message_id: "m1" })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.deleteMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe("respondToEvent", () => {
+  it.each([
+    ["accept", "accept", "Accepted"],
+    ["decline", "decline", "Declined"],
+    ["tentative", "tentativelyAccept", "Tentatively accepted"],
+  ] as const)("should map %s to the %s action", async (response, action, word) => {
+    mockClient.respondToEvent.mockResolvedValue(Right({}))
+
+    const result = await respondToEvent({ event_id: "e1", response })
+
+    expect(mockClient.respondToEvent).toHaveBeenCalledWith("e1", action, { sendResponse: true })
+    expect(message(result)).toBe(`${word}. A response was sent to the organizer.`)
+  })
+
+  it("should pass a comment and a suppressed response through", async () => {
+    mockClient.respondToEvent.mockResolvedValue(Right({}))
+
+    const result = await respondToEvent({
+      event_id: "e1",
+      response: "decline",
+      comment: "Out that week",
+      send_response: false,
+    })
+
+    expect(mockClient.respondToEvent).toHaveBeenCalledWith("e1", "decline", {
+      comment: "Out that week",
+      sendResponse: false,
+    })
+    expect(message(result)).toContain("No response was sent")
+  })
+})
+
+describe("sendChannelMessage", () => {
+  it("should start a new thread without reply_to_message_id", async () => {
+    mockClient.sendChannelMessage.mockResolvedValue(Right({ id: "m1" }))
+
+    await sendChannelMessage({ team_id: "t", channel_id: "c", content: "Hi" })
+
+    expect(mockClient.sendChannelMessage).toHaveBeenCalledWith("t", "c", "Hi")
+    expect(mockClient.replyToChannelMessage).not.toHaveBeenCalled()
+  })
+
+  it("should reply in the thread with reply_to_message_id", async () => {
+    mockClient.replyToChannelMessage.mockResolvedValue(Right({ id: "r1" }))
+
+    const result = await sendChannelMessage({
+      team_id: "t",
+      channel_id: "c",
+      content: "Agreed",
+      reply_to_message_id: "m1",
+    })
+
+    expect(mockClient.replyToChannelMessage).toHaveBeenCalledWith("t", "c", "m1", "Agreed")
+    expect(mockClient.sendChannelMessage).not.toHaveBeenCalled()
+    expect(message(result)).toBe("Reply posted in the thread.")
+  })
+})
+
+describe("formatChannelMessageSummary", () => {
+  // Without the ID a caller has nothing to pass as reply_to_message_id.
+  it("should include the message ID", () => {
+    const line = formatChannelMessageSummary({
+      id: "1690000000000",
+      createdDateTime: "2026-10-01T09:00:00Z",
+      from: { user: { displayName: "Ada" } },
+      body: { content: "Kickoff notes" },
+    })
+    expect(line).toBe("- **Ada** (2026-10-01T09:00:00Z): Kickoff notes (ID: 1690000000000)")
+  })
+})
+
+// A directory keyed by sign-in name, plus mail addresses that differ from it. getUserByKey answers
+// only a sign-in name or an ID, as Graph's /users/{key} does; findUsersByMail answers the mail field.
+const DIRECTORY = [
+  { id: "me-id", userPrincipalName: "jordan@civala.onmicrosoft.com", mail: "jordan@civala.com" },
+  { id: "ada-id", userPrincipalName: "ada@civala.onmicrosoft.com", mail: "ada@civala.com" },
+  { id: "bo-id", userPrincipalName: "bo@civala.onmicrosoft.com", mail: "bo@civala.com" },
+  {
+    id: "guest-id",
+    userPrincipalName: "pat_vendor.com#EXT#@civala.onmicrosoft.com",
+    mail: "pat@vendor.com",
+    userType: "Guest",
+  },
+]
+
+const useDirectory = (caller: Record<string, unknown> = { ...DIRECTORY[0], userType: "Member" }): void => {
+  mockClient.getMeAsChatMember.mockResolvedValue(Right(caller))
+  mockClient.getUserByKey.mockImplementation((key: string) => {
+    const user = DIRECTORY.find((u) => u.userPrincipalName.toLowerCase() === key.toLowerCase() || u.id === key)
+    return Promise.resolve(user ? Right(user) : Left({ type: "not_found", status: 404, message: "Resource not found" }))
+  })
+  mockClient.findUsersByMail.mockImplementation((address: string) =>
+    Promise.resolve(Right({ value: DIRECTORY.filter((u) => u.mail.toLowerCase() === address.toLowerCase()) })),
+  )
+  mockClient.sendChatMessage.mockResolvedValue(Right({ id: "m1" }))
+}
+
+type ChatBody = {
+  chatType: string
+  topic?: string
+  members: ReadonlyArray<{ roles: ReadonlyArray<string>; "user@odata.bind": string }>
+}
+
+const createdChat = (): ChatBody => mockClient.createChat.mock.calls[0]?.[0] as ChatBody
+
+const boundIds = (chat: ChatBody): ReadonlyArray<string> =>
+  chat.members.map((m) => /users\('([^']+)'\)/.exec(m["user@odata.bind"])?.[1] ?? "")
+
+describe("sendChatMessage", () => {
+  it("should send in an existing chat with chat_id", async () => {
+    mockClient.sendChatMessage.mockResolvedValue(Right({ id: "m1" }))
+
+    const result = await sendChatMessage({ chat_id: "19:abc", content: "Hi" })
+
+    expect(mockClient.sendChatMessage).toHaveBeenCalledWith("19:abc", "Hi")
+    expect(mockClient.createChat).not.toHaveBeenCalled()
+    expect(message(result)).toBe("Chat message sent.")
+  })
+
+  it.each([[{ content: "Hi" }], [{ chat_id: "19:abc", to: "ada@civala.com", content: "Hi" }]])(
+    "should require exactly one of chat_id or to",
+    async (params) => {
+      const result = await sendChatMessage(params)
+
+      expect(message(result)).toContain("exactly one of chat_id")
+      expect(mockClient.sendChatMessage).not.toHaveBeenCalled()
+    },
+  )
+
+  it("should bind members by directory ID, the caller first, as owners", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:pair", chatType: "oneOnOne" }))
+
+    const result = await sendChatMessage({ to: "ada@civala.onmicrosoft.com", content: "Hi" })
+
+    expect(mockClient.createChat).toHaveBeenCalledWith({
+      chatType: "oneOnOne",
+      members: [
+        {
+          "@odata.type": "#microsoft.graph.aadUserConversationMember",
+          roles: ["owner"],
+          "user@odata.bind": "https://graph.microsoft.com/v1.0/users('me-id')",
+        },
+        {
+          "@odata.type": "#microsoft.graph.aadUserConversationMember",
+          roles: ["owner"],
+          "user@odata.bind": "https://graph.microsoft.com/v1.0/users('ada-id')",
+        },
+      ],
+    })
+    expect(mockClient.sendChatMessage).toHaveBeenCalledWith("19:pair", "Hi")
+    expect(message(result)).toBe("Chat message sent. Chat ID: 19:pair.")
+  })
+
+  // /users/{key} rejects an email address that differs from the sign-in name, the common case.
+  it("should find a person by email when it differs from their sign-in name", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:pair", chatType: "oneOnOne" }))
+
+    await sendChatMessage({ to: "ada@civala.com", content: "Hi" })
+
+    expect(mockClient.findUsersByMail).toHaveBeenCalledWith("ada@civala.com")
+    expect(boundIds(createdChat())).toEqual(["me-id", "ada-id"])
+  })
+
+  // In-tenant guests must carry the guest role, or Graph rejects the whole chat.
+  it("should give an in-tenant guest the guest role", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:pair", chatType: "oneOnOne" }))
+
+    await sendChatMessage({ to: "pat@vendor.com", content: "Hi" })
+
+    const chat = createdChat()
+    expect(boundIds(chat)).toEqual(["me-id", "guest-id"])
+    expect(chat.members[1]?.roles).toEqual(["guest"])
+  })
+
+  // A consultant signed in as a guest of a client tenant: Graph rejects the chat if the caller is
+  // listed as an owner.
+  it("should give the caller the guest role when they are a guest", async () => {
+    useDirectory({
+      id: "me-id",
+      userPrincipalName: "jordan_sapients.ai#EXT#@civala.onmicrosoft.com",
+      userType: "Guest",
+    })
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:pair", chatType: "oneOnOne" }))
+
+    await sendChatMessage({ to: "ada@civala.com", content: "Hi" })
+
+    const chat = createdChat()
+    expect(boundIds(chat)).toEqual(["me-id", "ada-id"])
+    expect(chat.members[0]?.roles).toEqual(["guest"])
+    expect(chat.members[1]?.roles).toEqual(["owner"])
+  })
+
+  // Falling back to the mail filter after a throttle would turn a transient failure into "no match".
+  it("should report a failed lookup instead of trying the mail field", async () => {
+    useDirectory()
+    mockClient.getUserByKey.mockResolvedValue(Left({ type: "throttle", status: 429, message: "Too many requests" }))
+
+    const result = await sendChatMessage({ to: "ada@civala.com", content: "Hi" })
+
+    expect(message(result)).toBe("Couldn't look up ada@civala.com: Too many requests")
+    expect(mockClient.findUsersByMail).not.toHaveBeenCalled()
+    expect(mockClient.createChat).not.toHaveBeenCalled()
+  })
+
+  it("should try the mail field when the key can't be parsed as a sign-in name", async () => {
+    useDirectory()
+    mockClient.getUserByKey.mockResolvedValue(Left({ type: "api", status: 400, message: "Invalid object identifier" }))
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:pair", chatType: "oneOnOne" }))
+
+    await sendChatMessage({ to: "ada@civala.com", content: "Hi" })
+
+    expect(mockClient.findUsersByMail).toHaveBeenCalledWith("ada@civala.com")
+    expect(boundIds(createdChat())).toEqual(["me-id", "ada-id"])
+  })
+
+  it("should name a person it can't find, without creating a chat", async () => {
+    useDirectory()
+
+    const result = await sendChatMessage({ to: "ada@civala.com, nobody@civala.com", content: "Hi" })
+
+    expect(message(result)).toBe(
+      "No one in your organization matches nobody@civala.com. Use their work email or sign-in name.",
+    )
+    expect(mockClient.createChat).not.toHaveBeenCalled()
+  })
+
+  // Listing the caller twice fails the create, and "me plus one" should be a one-on-one chat. Matching
+  // by ID catches the caller's own aliases and two spellings of one person.
+  it("should drop the caller and duplicate people, however they are spelled", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:pair", chatType: "oneOnOne" }))
+
+    await sendChatMessage({
+      to: "Jordan@Civala.com, jordan@civala.onmicrosoft.com, ada@civala.com, ada@civala.onmicrosoft.com",
+      content: "Hi",
+    })
+
+    const chat = createdChat()
+    expect(chat.chatType).toBe("oneOnOne")
+    expect(boundIds(chat)).toEqual(["me-id", "ada-id"])
+  })
+
+  it("should point the caller at the self-chat when to names only themselves", async () => {
+    useDirectory()
+
+    const result = await sendChatMessage({ to: "jordan@civala.com", content: "note" })
+
+    expect(message(result)).toContain("48:notes")
+    expect(mockClient.createChat).not.toHaveBeenCalled()
+  })
+
+  it("should start a group chat with a topic and say to reuse its ID", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:group", chatType: "group" }))
+
+    const result = await sendChatMessage({ to: "ada@civala.com, bo@civala.com", topic: "Launch", content: "Hi all" })
+
+    const chat = createdChat()
+    expect(chat.chatType).toBe("group")
+    expect(chat.topic).toBe("Launch")
+    expect(boundIds(chat)).toEqual(["me-id", "ada-id", "bo-id"])
+    expect(message(result)).toContain("Started a new group chat (chat ID: 19:group)")
+    expect(message(result)).toContain("Use this chat_id for follow-ups")
+  })
+
+  it("should refuse a topic on a one-on-one chat", async () => {
+    useDirectory()
+
+    const result = await sendChatMessage({ to: "ada@civala.com", topic: "Launch", content: "Hi" })
+
+    expect(message(result)).toContain("only be set on a group chat")
+    expect(mockClient.createChat).not.toHaveBeenCalled()
+  })
+
+  it("should refuse a topic alongside chat_id", async () => {
+    const result = await sendChatMessage({ chat_id: "19:abc", topic: "Launch", content: "Hi" })
+
+    expect(message(result)).toContain("topic only applies")
+    expect(mockClient.sendChatMessage).not.toHaveBeenCalled()
+  })
+
+  // A retry with 'to' would make a second group chat, so the ID must survive a failed send.
+  it("should report the chat ID when the chat was created but the send failed", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Right({ id: "19:group", chatType: "group" }))
+    mockClient.sendChatMessage.mockResolvedValue(Left({ message: "Forbidden" }))
+
+    const result = await sendChatMessage({ to: "ada@civala.com, bo@civala.com", content: "Hi" })
+
+    expect(message(result)).toBe("Chat is ready (chat ID: 19:group), but sending failed: Forbidden")
+  })
+
+  it("should pass Graph's error through when the chat can't be created", async () => {
+    useDirectory()
+    mockClient.createChat.mockResolvedValue(Left({ message: "Chat creation blocked by policy" }))
+
+    const result = await sendChatMessage({ to: "ada@civala.com", content: "Hi" })
+
+    expect(message(result)).toBe("Failed to start chat: Chat creation blocked by policy")
+    expect(mockClient.sendChatMessage).not.toHaveBeenCalled()
+  })
+})

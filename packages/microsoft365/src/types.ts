@@ -57,6 +57,7 @@ export type GraphUser = {
   readonly displayName?: string
   readonly mail?: string
   readonly userPrincipalName?: string
+  readonly userType?: string
   readonly jobTitle?: string
   readonly department?: string
   readonly officeLocation?: string
@@ -78,6 +79,7 @@ export type GraphMessage = {
   readonly bodyPreview?: string
   readonly body?: { readonly contentType?: string; readonly content?: string }
   readonly importance?: string
+  readonly isDraft?: boolean
 }
 
 export type GraphMailFolder = {
