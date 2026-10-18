@@ -365,6 +365,16 @@ const main = async () => {
   // still green (they never read a real PDF). Extract one, and report only page and character counts.
   await checkPdf()
 
+  // Scan cursors: each one wraps Graph's nextLink, which the client re-checks before following it.
+  // The fake Graph in the unit suite only emits links the tests wrote, so only a real link shows
+  // whether that check accepts what Graph sends. 1.2.14 rejected every folder-scoped cursor.
+  await scanCursorCase("scan_messages cursor, no folder", {})
+  await scanCursorCase("scan_messages cursor, folder", { folder: "inbox" })
+  await scanCursorCase("scan_messages cursor, folder + filter", {
+    folder: "inbox",
+    filter: "receivedDateTime ge 2000-01-01T00:00:00Z",
+  })
+
   // Transcripts: page through until the last part, following each marker's offset.
   const meetingId = process.env.SMOKE_MEETING_ID
   if (!meetingId) {
@@ -391,6 +401,37 @@ const main = async () => {
     offset = Number(next[1])
   }
   record("FAIL", "transcript paging", "no end marker after 20 parts")
+}
+
+// Page 1 must hand back a cursor (top: 2 makes one likely). Following cursors must reach a page with
+// new refs. A filtered page can be empty and still carry a cursor, so empty pages are skipped over.
+const MAX_CURSOR_PAGES = 5
+
+const scanRefs = (text) =>
+  text
+    .split("\n")
+    .filter((line) => /^[a-z0-9]{4}-\d+\|/.test(line))
+    .map((line) => line.split("|")[0])
+
+const scanCursor = (text) => text.match(/cursor: "([^"]+)"/)?.[1]
+
+async function scanCursorCase(label, args) {
+  const first = await call("scan_messages", { ...args, top: 2 })
+  if (!first.ok) return record("FAIL", label, `page 1: ${first.error}`)
+  const seen = new Set(scanRefs(first.text))
+  let cursor = scanCursor(first.text)
+  if (!cursor) return record("SKIP", label, "page 1 was the only page")
+
+  for (let page = 2; page <= MAX_CURSOR_PAGES + 1; page++) {
+    const next = await call("scan_messages", { cursor })
+    if (!next.ok) return record("FAIL", label, `page ${page}: ${next.error}`)
+    const refs = scanRefs(next.text)
+    if (refs.some((ref) => seen.has(ref))) return record("FAIL", label, `page ${page} repeats an earlier page`)
+    if (refs.length > 0) return record("PASS", label, `page ${page} has ${refs.length} new message(s)`)
+    cursor = scanCursor(next.text)
+    if (!cursor) return record("SKIP", label, `page ${page} was empty and the last page`)
+  }
+  record("FAIL", label, `${MAX_CURSOR_PAGES} empty pages in a row`)
 }
 
 async function checkPdf() {
