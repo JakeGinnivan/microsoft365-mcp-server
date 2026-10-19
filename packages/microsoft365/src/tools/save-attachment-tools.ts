@@ -10,8 +10,9 @@ import { Left, Right } from "functype/either"
 import { getAccessToken } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getGraphClient } from "../client/graph-client"
+import { resolveMailboxScope } from "../mail/mailbox"
 import type { GraphAttachment } from "../types"
-import { resolveMessageIdOrRef } from "../utils/message-refs"
+import { describeRefFailure, resolveMessageIdOrRef } from "../utils/message-refs"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -99,21 +100,20 @@ export const saveAttachment = async (params: {
   message_id: string
   attachment_id?: string
   out_dir?: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
+  const resolvedScope = resolveMailboxScope(params.mailbox)
+  if (resolvedScope.isLeft()) return Left(resolvedScope.value as UserError)
+  const scope = resolvedScope.orThrow()
+
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
-  const messageId = resolveMessageIdOrRef(params.message_id)
-  if (!messageId) {
-    return Left(
-      new UserError(
-        `Unknown message ref "${params.message_id}". Refs come from scan_messages and last for the session — ` +
-          `re-run the scan to refresh them.`,
-      ),
-    )
-  }
+  const resolved = resolveMessageIdOrRef(params.message_id, scope.mailbox)
+  if (resolved.kind !== "id") return Left(new UserError(describeRefFailure(resolved, scope.mailbox)))
+  const messageId = resolved.id
 
-  const listResult = await client.listAttachments(messageId)
+  const listResult = await client.listAttachments(messageId, scope.prefix)
   if (listResult.isLeft()) {
     return Left(new UserError(`Failed to list attachments: ${(listResult.value as { message: string }).message}`))
   }
@@ -186,7 +186,7 @@ export const saveAttachment = async (params: {
   const token = tokenResult.value as string
 
   const response = await fetch(
-    `${GRAPH_API_BASE}/v1.0/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(chosen.id)}/$value`,
+    `${GRAPH_API_BASE}/v1.0${scope.prefix}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(chosen.id)}/$value`,
     { headers: { Authorization: `Bearer ${token}` } },
   )
   if (!response.ok) return Left(await httpError(response))
