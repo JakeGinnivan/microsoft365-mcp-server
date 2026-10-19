@@ -2,10 +2,17 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { DeviceCodeCredential, InteractiveBrowserCredential, type TokenCredential } from "@azure/identity"
+import {
+  type AuthenticationRecord,
+  AuthenticationRequiredError,
+  DeviceCodeCredential,
+  InteractiveBrowserCredential,
+  type TokenCredential,
+} from "@azure/identity"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createCredential } from "../src/auth/auth-modes"
+import { readAuthenticationRecord, writeAuthenticationRecord } from "../src/auth/token-cache"
 
 const config = { mode: "interactive" as const, tenantId: "common", clientId: "11111111-1111-1111-1111-111111111111" }
 const token = { token: "test-token", expiresOnTimestamp: 1_000 }
@@ -68,5 +75,84 @@ describe("interactive authentication mode", () => {
 
     await expect(credential.getToken("scope")).rejects.toBe(error)
     expect(deviceToken).not.toHaveBeenCalled()
+  })
+
+  describe("signing in when the cache cannot serve a token", () => {
+    const record: AuthenticationRecord = {
+      authority: "https://login.microsoftonline.com/common",
+      homeAccountId: "uid.utid",
+      tenantId: "utid",
+      username: "someone@example.com",
+      clientId: config.clientId,
+    }
+    const required = () => new AuthenticationRequiredError({ scopes: ["scope"] })
+
+    it("signs in through authenticate() and persists the record it returns", async () => {
+      const getToken = vi
+        .spyOn(InteractiveBrowserCredential.prototype, "getToken")
+        .mockRejectedValueOnce(required())
+        .mockResolvedValue(token)
+      const authenticate = vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate").mockResolvedValue(record)
+      const credential = createCredential(config).value as TokenCredential
+
+      await expect(credential.getToken("scope")).resolves.toBe(token)
+
+      expect(authenticate).toHaveBeenCalledOnce()
+      expect(getToken).toHaveBeenCalledTimes(2)
+      expect(readAuthenticationRecord(cacheDir.path)).toEqual(record)
+    })
+
+    it("does not open the browser when the cache serves the token", async () => {
+      vi.spyOn(InteractiveBrowserCredential.prototype, "getToken").mockResolvedValue(token)
+      const authenticate = vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate")
+      const credential = createCredential(config).value as TokenCredential
+
+      await expect(credential.getToken("scope")).resolves.toBe(token)
+      expect(authenticate).not.toHaveBeenCalled()
+    })
+
+    // Parallel Graph calls can all miss the cache at once; each opening a browser window would be absurd.
+    it("shares one sign-in between concurrent requests", async () => {
+      vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
+        .mockRejectedValueOnce(required())
+        .mockRejectedValueOnce(required())
+        .mockResolvedValue(token)
+      const authenticate = vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate").mockResolvedValue(record)
+      const credential = createCredential(config).value as TokenCredential
+
+      await Promise.all([credential.getToken("scope"), credential.getToken("scope")])
+      expect(authenticate).toHaveBeenCalledOnce()
+    })
+
+    it("says so when a saved sign-in could not be reused, and stays quiet on a first sign-in", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+      vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
+        .mockRejectedValueOnce(required())
+        .mockResolvedValue(token)
+      vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate").mockResolvedValue(record)
+
+      await (createCredential(config).value as TokenCredential).getToken("scope")
+      expect(log).not.toHaveBeenCalled()
+
+      vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
+        .mockRejectedValueOnce(required())
+        .mockResolvedValue(token)
+      await (createCredential(config).value as TokenCredential).getToken("scope")
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("Cached credentials could not be reused"))
+    })
+
+    it("does not turn other failures into a sign-in", async () => {
+      const error = new Error("network down")
+      vi.spyOn(InteractiveBrowserCredential.prototype, "getToken").mockRejectedValue(error)
+      const authenticate = vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate")
+
+      await expect((createCredential(config).value as TokenCredential).getToken("scope")).rejects.toBe(error)
+      expect(authenticate).not.toHaveBeenCalled()
+    })
+
+    it("ignores a stored record missing its account fields", () => {
+      writeAuthenticationRecord({ ...record, homeAccountId: "" }, cacheDir.path)
+      expect(readAuthenticationRecord(cacheDir.path)).toBeUndefined()
+    })
   })
 })

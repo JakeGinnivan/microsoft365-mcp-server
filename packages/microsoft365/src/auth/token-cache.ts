@@ -3,6 +3,14 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, w
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
+import {
+  type AuthenticationRecord,
+  deserializeAuthenticationRecord,
+  serializeAuthenticationRecord,
+  type TokenCachePersistenceOptions,
+} from "@azure/identity"
+import type { ICachePlugin } from "@azure/msal-node"
+
 // Azure Identity keeps tokens in memory unless a persistence plugin is registered, so
 // every restart forces a fresh interactive sign-in. That is merely annoying for a CLI
 // and fatal for anything running unattended.
@@ -20,19 +28,6 @@ import { dirname, join } from "node:path"
 
 const OWNER_ONLY = 0o600
 const DIR_OWNER_ONLY = 0o700
-
-type CacheContext = {
-  readonly cacheHasChanged: boolean
-  readonly tokenCache: {
-    readonly deserialize: (data: string) => void
-    readonly serialize: () => string
-  }
-}
-
-export type CachePlugin = {
-  readonly beforeCacheAccess: (context: CacheContext) => Promise<void>
-  readonly afterCacheAccess: (context: CacheContext) => Promise<void>
-}
 
 /**
  * Where the cache lives. MS365_TOKEN_CACHE_PATH wins; otherwise it sits under the XDG
@@ -54,8 +49,9 @@ const cacheFileName = (name: string): string => {
   return `${safe}.${digest}.json`
 }
 
-const isMissing = (error: unknown): boolean =>
-  typeof error === "object" && error !== null && (error as { code?: string }).code === "ENOENT"
+const isMissing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT"
+
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 /**
  * Reads the cache, refusing any file that is readable by more than its owner.
@@ -83,7 +79,7 @@ const readCache = (path: string): string | undefined => {
     return readFileSync(path, "utf8")
   } catch (error) {
     if (!isMissing(error)) {
-      console.error(`[Auth] Could not read token cache at ${path}: ${(error as Error).message}`)
+      console.error(`[Auth] Could not read token cache at ${path}: ${messageOf(error)}`)
     }
     return undefined
   }
@@ -109,7 +105,7 @@ const writeCache = (path: string, contents: string): void => {
   } catch (error) {
     // A cache that cannot be written is a lost convenience, not a failed sign-in, so
     // this degrades to in-memory rather than propagating.
-    console.error(`[Auth] Could not persist token cache to ${path}: ${(error as Error).message}`)
+    console.error(`[Auth] Could not persist token cache to ${path}: ${messageOf(error)}`)
   }
 }
 
@@ -117,7 +113,7 @@ const writeCache = (path: string, contents: string): void => {
  * Builds the plugin Azure Identity asks for when tokenCachePersistenceOptions is set.
  * Matches the shape of the official keytar-backed plugin, minus the native dependency.
  */
-export const createFileCachePlugin = (name: string, directory = resolveCacheDirectory()): CachePlugin => {
+export const createFileCachePlugin = (name: string, directory = resolveCacheDirectory()): ICachePlugin => {
   const path = join(directory, cacheFileName(name))
 
   return {
@@ -133,16 +129,19 @@ export const createFileCachePlugin = (name: string, directory = resolveCacheDire
   }
 }
 
+// The slice of identity's plugin context this plugin uses. Identity declares the full
+// context (AzurePluginContext) @internal and does not export it, so it is restated here
+// in identity's own published types.
 type PluginContext = {
   readonly cachePluginControl: {
-    readonly setPersistence: (provider: (options?: { name?: string }) => Promise<CachePlugin>) => void
+    readonly setPersistence: (factory: (options?: TokenCachePersistenceOptions) => Promise<ICachePlugin>) => void
   }
 }
 
 /**
  * An identity plugin, in the shape `useIdentityPlugin` expects: a function handed a
  * plugin context. Identity types that context as `unknown` and documents that plugin
- * authors are responsible for casting it, which is what happens here.
+ * authors are responsible for casting it, so this is the one cast that has to stay.
  */
 export const fileCachePersistencePlugin = (context: unknown): void => {
   const { cachePluginControl } = context as PluginContext
@@ -162,33 +161,23 @@ export const fileCachePersistencePlugin = (context: unknown): void => {
 // username, authority). It is stored beside the cache at the same 0600 anyway, since
 // the username is personal information.
 
-export type AuthenticationRecordLike = {
-  readonly authority: string
-  readonly homeAccountId: string
-  readonly tenantId: string
-  readonly username: string
-  readonly clientId: string
-}
-
 const RECORD_FILE = "authentication-record.json"
 
-export const readAuthenticationRecord = (directory = resolveCacheDirectory()): AuthenticationRecordLike | undefined => {
+export const readAuthenticationRecord = (directory = resolveCacheDirectory()): AuthenticationRecord | undefined => {
   const contents = readCache(join(directory, RECORD_FILE))
   if (!contents) return undefined
 
   try {
-    const parsed = JSON.parse(contents) as Partial<AuthenticationRecordLike>
-    // A truncated or hand-edited record would otherwise fail deep inside MSAL with a
-    // far less obvious error than simply signing in again.
-    if (!parsed.homeAccountId || !parsed.username || !parsed.clientId) return undefined
-    return parsed as AuthenticationRecordLike
+    // deserializeAuthenticationRecord parses and checks the record version, but not that
+    // the fields are present. A truncated or hand-edited record would otherwise fail deep
+    // inside MSAL with a far less obvious error than simply signing in again.
+    const record = deserializeAuthenticationRecord(contents)
+    return record.homeAccountId && record.username && record.clientId ? record : undefined
   } catch {
     console.error("[Auth] Stored authentication record is unreadable; a fresh sign-in will be required.")
     return undefined
   }
 }
 
-export const writeAuthenticationRecord = (
-  record: AuthenticationRecordLike,
-  directory = resolveCacheDirectory(),
-): void => writeCache(join(directory, RECORD_FILE), JSON.stringify(record))
+export const writeAuthenticationRecord = (record: AuthenticationRecord, directory = resolveCacheDirectory()): void =>
+  writeCache(join(directory, RECORD_FILE), serializeAuthenticationRecord(record))

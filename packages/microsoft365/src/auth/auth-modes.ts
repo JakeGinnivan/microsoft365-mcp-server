@@ -1,5 +1,11 @@
-import type { AccessToken as AzureAccessToken, TokenCachePersistenceOptions, TokenCredential } from "@azure/identity"
+import type {
+  AccessToken as AzureAccessToken,
+  GetTokenOptions,
+  TokenCachePersistenceOptions,
+  TokenCredential,
+} from "@azure/identity"
 import {
+  AuthenticationRequiredError,
   ClientCertificateCredential,
   ClientSecretCredential,
   DeviceCodeCredential,
@@ -12,12 +18,7 @@ import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
-import {
-  type AuthenticationRecordLike,
-  fileCachePersistencePlugin,
-  readAuthenticationRecord,
-  writeAuthenticationRecord,
-} from "./token-cache"
+import { fileCachePersistencePlugin, readAuthenticationRecord, writeAuthenticationRecord } from "./token-cache"
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
@@ -89,73 +90,47 @@ const createDeviceCodeCredential = (
     },
   }) as TokenCredential
 
-// An AuthenticationRecord only exists once a sign-in has completed, so it is captured
-// on the way past rather than up front, and written once — it does not change, and
-// rewriting it per token acquisition would be pointless disk traffic.
+// Persisting the cache is not enough on its own: the credential only consults it once it
+// knows which account to look for, and that comes from an AuthenticationRecord. So the
+// browser credential is driven through its documented two-step flow instead of letting it
+// sign in implicitly:
 //
-// The record is reached through the credential's internal msalClient. That is private
-// API, so it is probed defensively: if the shape ever changes, the record simply is not
-// saved and the next start signs in again, which is the current behaviour anyway. A
-// missing convenience must not become a failed authentication.
-const readActiveAccount = (browser: TokenCredential): AuthenticationRecordLike | undefined => {
-  const client = (browser as { msalClient?: { getActiveAccount?: () => unknown } }).msalClient
-  const account = client?.getActiveAccount?.()
-  const record = account as Partial<AuthenticationRecordLike> | undefined
-  return record?.homeAccountId && record.username && record.clientId ? (record as AuthenticationRecordLike) : undefined
-}
-
-// InteractiveBrowserCredential swallows the reason silent authentication failed: it
-// catches AuthenticationRequiredError and falls straight through to opening a browser,
-// logging nothing. So a stale record, a scope mismatch, or an expired refresh token all
-// present identically as "it asked me to sign in again", with no way to tell which.
+// - Constructed with disableAutomaticAuthentication, getToken tries the cache silently
+//   and throws AuthenticationRequiredError rather than opening a browser when it cannot.
+// - authenticate() then signs in interactively and returns the AuthenticationRecord,
+//   which is persisted so the next start can go straight to the cache.
 //
-// This probes silently first, with automatic authentication disabled so the failure
-// surfaces as an error instead of a browser window, and reports the reason before
-// handing off to the interactive flow. It changes no behaviour — the browser still
-// opens when it must — it only makes the cause visible.
-const reportSilentFailure = (credential: TokenCredential, probe: SilentProbe): TokenCredential => ({
-  getToken: async (scopes, options) => {
-    const outcome = await probe(scopes, options)
-    if (outcome) console.error(`[Auth] Cached credentials could not be reused (${outcome}). Signing in again.`)
-    return credential.getToken(scopes, options)
-  },
-})
+// A refused silent attempt is logged when a record existed, because otherwise a stale
+// record, a scope change or an expired refresh token all look the same: "it asked me to
+// sign in again". Identity replaces the underlying reason with a generic message when it
+// throws, and only writes the original to its own logger, hence the AZURE_LOG_LEVEL hint.
+const signInWhenRequired = (browser: InteractiveBrowserCredential, hadRecord: boolean): TokenCredential => {
+  // Parallel Graph calls can all miss the cache at once; they share one sign-in rather
+  // than each opening a browser window.
+  const pending = Ref<Promise<void> | undefined>(undefined)
 
-type SilentProbe = (
-  scopes: Parameters<TokenCredential["getToken"]>[0],
-  options: Parameters<TokenCredential["getToken"]>[1],
-) => Promise<string | undefined>
-
-// Returns a reason when the cache cannot serve the request, or undefined when it can.
-const silentProbe =
-  (browser: { getToken: TokenCredential["getToken"] }): SilentProbe =>
-  async (scopes, options) => {
-    try {
-      // Not on the public GetTokenOptions type, but honoured by msalClient — it is what
-      // turns a silent-auth failure into a thrown error rather than a browser window.
-      await browser.getToken(scopes, {
-        ...options,
-        disableAutomaticAuthentication: true,
-      } as Parameters<TokenCredential["getToken"]>[1])
-      return undefined
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
-    }
+  const signIn = async (scopes: string | string[], options: GetTokenOptions | undefined): Promise<void> => {
+    const record = await browser.authenticate(scopes, options)
+    if (record) writeAuthenticationRecord(record)
   }
 
-const rememberAccount = (credential: TokenCredential, browser: TokenCredential): TokenCredential => {
-  const saved = Ref(false)
   return {
     getToken: async (scopes, options) => {
-      const token = await credential.getToken(scopes, options)
-      if (!saved.get()) {
-        const record = readActiveAccount(browser)
-        if (record) {
-          writeAuthenticationRecord(record)
-          saved.set(true)
+      try {
+        return await browser.getToken(scopes, options)
+      } catch (error) {
+        if (!(error instanceof AuthenticationRequiredError)) throw error
+        if (hadRecord) {
+          console.error(
+            "[Auth] Cached credentials could not be reused, so signing in again. " +
+              "Set AZURE_LOG_LEVEL=info to see why.",
+          )
         }
+        const inFlight = pending.get() ?? signIn(scopes, options).finally(() => pending.set(undefined))
+        pending.set(inFlight)
+        await inFlight
+        return browser.getToken(scopes, options)
       }
-      return token
     },
   }
 }
@@ -184,29 +159,29 @@ const createInteractiveCredential = (
     )
   }
 
-  // Without this the persisted cache is unreachable: the credential raises
-  // AuthenticationRequiredError before consulting it, because it does not know which
-  // account to look for.
-  const authenticationRecord = tokenCachePersistenceOptions ? readAuthenticationRecord() : undefined
+  const redirectUri = config.redirectUri ?? DEFAULT_REDIRECT_URI
 
-  return tryCredential(() => {
-    const browser = new InteractiveBrowserCredential({
-      tenantId,
-      clientId,
-      redirectUri: config.redirectUri ?? DEFAULT_REDIRECT_URI,
-      tokenCachePersistenceOptions,
-      authenticationRecord,
-    }) as TokenCredential
+  if (!tokenCachePersistenceOptions) {
+    return tryCredential(() => new InteractiveBrowserCredential({ tenantId, clientId, redirectUri }), "interactive")
+  }
 
-    if (!tokenCachePersistenceOptions) return browser
+  const authenticationRecord = readAuthenticationRecord()
 
-    // Only worth probing when a cache exists to be reused; otherwise the first sign-in
-    // would report a failure that is simply "nothing cached yet".
-    const probed = authenticationRecord
-      ? reportSilentFailure(browser, silentProbe(browser as { getToken: TokenCredential["getToken"] }))
-      : browser
-    return rememberAccount(probed, browser)
-  }, "interactive")
+  return tryCredential(
+    () =>
+      signInWhenRequired(
+        new InteractiveBrowserCredential({
+          tenantId,
+          clientId,
+          redirectUri,
+          tokenCachePersistenceOptions,
+          authenticationRecord,
+          disableAutomaticAuthentication: true,
+        }),
+        authenticationRecord !== undefined,
+      ),
+    "interactive",
+  )
 }
 
 const createCertificateCredential = (

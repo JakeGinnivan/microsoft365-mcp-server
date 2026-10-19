@@ -1,7 +1,10 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import type { TokenCachePersistenceOptions } from "@azure/identity"
+import { type ICachePlugin, TokenCacheContext } from "@azure/msal-node"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createFileCachePlugin, fileCachePersistencePlugin, resolveCacheDirectory } from "../src/auth/token-cache"
@@ -9,10 +12,7 @@ import { createFileCachePlugin, fileCachePersistencePlugin, resolveCacheDirector
 const cacheContext = (serialized: string, hasChanged = true) => {
   const deserialize = vi.fn()
   return {
-    context: {
-      cacheHasChanged: hasChanged,
-      tokenCache: { deserialize, serialize: () => serialized },
-    },
+    context: new TokenCacheContext({ deserialize, serialize: () => serialized }, hasChanged),
     deserialize,
   }
 }
@@ -161,15 +161,14 @@ describe("token cache", () => {
 
   describe("fileCachePersistencePlugin", () => {
     it("registers a provider that yields a working plugin", async () => {
-      const setPersistence = vi.fn()
+      const setPersistence =
+        vi.fn<(factory: (options?: TokenCachePersistenceOptions) => Promise<ICachePlugin>) => void>()
       fileCachePersistencePlugin({ cachePluginControl: { setPersistence } })
 
       expect(setPersistence).toHaveBeenCalledOnce()
 
-      const provider = setPersistence.mock.calls[0]![0] as (o: { name?: string }) => Promise<unknown>
-      const plugin = (await provider({ name: "from-provider" })) as {
-        beforeCacheAccess: (c: unknown) => Promise<void>
-      }
+      const factory = setPersistence.mock.calls[0]![0]
+      const plugin = await factory({ name: "from-provider" })
 
       expect(typeof plugin.beforeCacheAccess).toBe("function")
     })
@@ -178,14 +177,12 @@ describe("token cache", () => {
 
 // The plugin owns its naming scheme; tests locate the file rather than duplicating it.
 const findCacheFile = (directory: string): string => {
-  const { readdirSync } = require("node:fs") as typeof import("node:fs")
   const found = readdirSync(directory).find((f) => f.endsWith(".json"))
   if (!found) throw new Error(`No cache file written in ${directory}`)
   return found
 }
 
 const cacheFileNameFor = (name: string): string => {
-  const { createHash } = require("node:crypto") as typeof import("node:crypto")
   const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64)
   return `${safe}.${createHash("sha256").update(name).digest("hex").slice(0, 8)}.json`
 }

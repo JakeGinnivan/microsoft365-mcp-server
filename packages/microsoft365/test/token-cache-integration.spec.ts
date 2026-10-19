@@ -4,7 +4,8 @@ import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
-import { useIdentityPlugin } from "@azure/identity"
+import { type TokenCachePersistenceOptions, useIdentityPlugin } from "@azure/identity"
+import { type ICachePlugin, TokenCacheContext } from "@azure/msal-node"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { fileCachePersistencePlugin } from "../src/auth/token-cache"
@@ -30,43 +31,40 @@ describe("token cache integration with @azure/identity", () => {
     // useIdentityPlugin is responsible for populating. Asserting on it proves
     // registration actually took effect — the step that silently no-opped under the
     // keytar implementation.
+    // This module is internal to identity and has no published types, so the import is
+    // typed by hand — with identity's and MSAL's own published types for the factory.
+    type PersistenceFactory = (options?: TokenCachePersistenceOptions) => Promise<ICachePlugin>
     const require_ = createRequire(import.meta.url)
     const identityRoot = dirname(require_.resolve("@azure/identity/package.json"))
     const { msalNodeFlowCacheControl } = (await import(
       join(identityRoot, "dist/esm/msal/nodeFlows/msalPlugins.js")
-    )) as { msalNodeFlowCacheControl: { setPersistence: (p: unknown) => void } }
+    )) as { msalNodeFlowCacheControl: { setPersistence: (factory: PersistenceFactory) => void } }
 
     // Capture the provider identity registered, then exercise it exactly as
     // generatePluginConfiguration does internally.
-    const captured: Array<(o: { name?: string }) => Promise<unknown>> = []
-    msalNodeFlowCacheControl.setPersistence = (provider) =>
-      captured.push(provider as (o: { name?: string }) => Promise<unknown>)
+    const captured: Array<PersistenceFactory> = []
+    msalNodeFlowCacheControl.setPersistence = (factory) => captured.push(factory)
 
     useIdentityPlugin(fileCachePersistencePlugin)
     expect(captured, "useIdentityPlugin did not register a persistence provider").toHaveLength(1)
 
     const config = { cache: { cachePlugin: captured[0]!({ name: "integration" }) } }
 
-    const plugin = (await config.cache.cachePlugin) as {
-      beforeCacheAccess: (c: unknown) => Promise<void>
-      afterCacheAccess: (c: unknown) => Promise<void>
-    }
+    const plugin = await config.cache.cachePlugin
     expect(plugin, "identity produced no cache plugin").toBeDefined()
 
-    await plugin.afterCacheAccess({
-      cacheHasChanged: true,
-      tokenCache: { serialize: () => '{"secret":"xyz"}', deserialize: () => undefined },
-    })
+    await plugin.afterCacheAccess(
+      new TokenCacheContext({ serialize: () => '{"secret":"xyz"}', deserialize: () => undefined }, true),
+    )
 
     const files = readdirSync(directory)
     expect(files, "nothing was persisted to disk").toHaveLength(1)
     expect(statSync(join(directory, files[0]!)).mode & 0o777).toBe(0o600)
 
     const seen: string[] = []
-    await plugin.beforeCacheAccess({
-      cacheHasChanged: false,
-      tokenCache: { serialize: () => "", deserialize: (d: string) => seen.push(d) },
-    })
+    await plugin.beforeCacheAccess(
+      new TokenCacheContext({ serialize: () => "", deserialize: (d: string) => void seen.push(d) }, false),
+    )
     expect(seen).toEqual(['{"secret":"xyz"}'])
   })
 })
