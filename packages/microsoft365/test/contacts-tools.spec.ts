@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises"
+import { readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -57,6 +57,13 @@ describe("exportContacts", () => {
       ["C3", "Contacts/Family/Cousins"],
     ])
     expect(exported.folders.map((f) => f.count)).toEqual([1, 1, 1])
+  })
+
+  it("writes the export readable only by its owner", async () => {
+    const result = await exportContacts({ out_dir: outDir })
+    const path = (result.value as string).match(/^Saved: (.+)$/m)?.[1]
+
+    expect(((await stat(path as string)).mode & 0o777).toString(8)).toBe("600")
   })
 
   // The default page size would hit requestPaginated's 50-page cap at 500 contacts and
