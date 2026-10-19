@@ -4,6 +4,7 @@ import {
   GRAPH_API_BASE,
   mapHttpError,
   parseJsonResponse,
+  resilientFetch,
 } from "@sapientsai/ms-graph-core"
 import { None, type Option, Ref, Some } from "functype"
 import { type Either, Left, Right } from "functype/either"
@@ -38,8 +39,7 @@ import type {
   ODataParams,
   ODataResponse,
 } from "../types"
-
-const defaultVersion = (): GraphApiVersion => (process.env.MS365_GRAPH_VERSION === "beta" ? "beta" : "v1.0")
+import { defaultVersion } from "./graph-version"
 
 const createGraphClient = (auth: AuthStrategy) => {
   // Generic request machinery (auth injection, OData, error mapping, pagination) lives in
@@ -294,7 +294,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     const url = `${GRAPH_API_BASE}/${version}${driveItemPath(id, driveId)}/content`
 
     try {
-      const response = await fetch(url, {
+      const response = await resilientFetch(url, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
         redirect: "follow",
@@ -547,19 +547,19 @@ const createGraphClient = (auth: AuthStrategy) => {
     const separator = path.includes("?") ? "&" : "?"
     const url = `${GRAPH_API_BASE}/${version}${path}${separator}@microsoft.graph.conflictBehavior=${conflictBehavior}`
 
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 60_000)
-
     try {
-      const response = await fetch(url, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": contentType,
+      const response = await resilientFetch(
+        url,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": contentType,
+          },
+          body: content,
         },
-        body: content,
-        signal: controller.signal,
-      })
+        { retryTransient: false },
+      )
 
       if (!response.ok) {
         return mapHttpError<GraphDriveItem>(response)
@@ -568,15 +568,10 @@ const createGraphClient = (auth: AuthStrategy) => {
       const text = await response.text()
       return parseJsonResponse<GraphDriveItem>(text)
     } catch (error) {
-      const isAbort = error instanceof Error && error.name === "AbortError"
       return Left<GraphApiError, GraphDriveItem>({
         type: "network",
-        message: isAbort
-          ? "Upload timed out after 60s"
-          : `Network error: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Network error: ${error instanceof Error ? error.message : String(error)}`,
       })
-    } finally {
-      clearTimeout(timeout)
     }
   }
 

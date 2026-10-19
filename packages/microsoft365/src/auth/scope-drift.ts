@@ -34,7 +34,12 @@ const normalize = (scope: string): string => scope.trim().toLowerCase()
 export const missingScopes = (granted: ReadonlyArray<string>, required: RequiredScopes): ReadonlyArray<string> => {
   if (granted.length === 0) return []
 
+  // Switching MS365_READ_ONLY on does not remove stronger permissions from an existing
+  // token. Mail.ReadWrite.Shared also grants reading shared mail, so it satisfies the
+  // reduced requirement without a cache reset or a new consent grant.
+  // https://learn.microsoft.com/en-us/graph/permissions-reference#mailreadwriteshared
   const have = new Set(granted.map(normalize))
+  if (have.has("mail.readwrite.shared")) have.add("mail.read.shared")
   return required.filter((scope) => !have.has(normalize(scope)))
 }
 

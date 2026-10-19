@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest"
 import { describeScopeDrift, missingScopes, resolveRequiredScopes } from "../src/auth/scope-drift"
 
 describe("missingScopes", () => {
+  it("accepts an existing shared-write grant after enabling read-only mode", () => {
+    const required = resolveRequiredScopes({
+      MS365_ALLOWED_MAILBOXES: "bel@example.com",
+      MS365_READ_ONLY: "true",
+    } as NodeJS.ProcessEnv)
+    expect(missingScopes(["Mail.ReadWrite.Shared"], required)).toEqual([])
+    expect(missingScopes(["mail.readwrite.shared"], required)).toEqual([])
+  })
+
+  it("does not accept a shared-read grant when shared writes are needed", () => {
+    expect(missingScopes(["Mail.Read.Shared"], ["Mail.ReadWrite.Shared"])).toEqual(["Mail.ReadWrite.Shared"])
+  })
+
   it("finds a required scope that was not granted", () => {
     expect(missingScopes(["Mail.ReadWrite"], ["Mail.ReadWrite.Shared"])).toEqual(["Mail.ReadWrite.Shared"])
   })

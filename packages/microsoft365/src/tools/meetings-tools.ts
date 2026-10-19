@@ -1,3 +1,4 @@
+import { resilientFetch } from "@sapientsai/ms-graph-core"
 import { UserError } from "fastmcp"
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
@@ -5,6 +6,7 @@ import { Left, Right } from "functype/either"
 import { getAccessToken } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getGraphClient } from "../client/graph-client"
+import { defaultVersion } from "../client/graph-version"
 import type { GraphCallTranscript, ODataResponse } from "../types"
 import { formatTranscriptList } from "../utils/formatters"
 
@@ -14,7 +16,6 @@ const requireClient = () => {
   return client.orThrow()
 }
 
-const VERSION = "v1.0"
 const DEFAULT_MAX_CHARS = 50000
 
 // Transcript content formats. text/vtt carries `<v Speaker>` voice tags; the +text form carries the
@@ -106,7 +107,7 @@ const resolveMeetingId = async (params: MeetingRef): Promise<Either<UserError, s
     "GET",
     meetingByJoinUrlPath(params.join_web_url),
     undefined,
-    VERSION,
+    defaultVersion(),
   )
   if (result.isLeft()) {
     return Left(new UserError(`Failed to resolve meeting: ${(result.value as { message: string }).message}`))
@@ -127,7 +128,7 @@ export const listMeetingTranscripts = async (params: MeetingRef): Promise<Either
     "GET",
     `/me/onlineMeetings/${encodeURIComponent(meetingId.value as string)}/transcripts`,
     undefined,
-    VERSION,
+    defaultVersion(),
   )
 
   return result
@@ -154,7 +155,7 @@ type ContentAttempt = {
 }
 
 const fetchTranscriptContent = async (url: string, accept: string, token: string): Promise<ContentAttempt> => {
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: accept } })
+  const response = await resilientFetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: accept } })
   const text = await response.text()
 
   if (response.ok) return { ok: true, status: response.status, text }
@@ -244,7 +245,7 @@ export const getMeetingTranscript = async (
   const token = tokenResult.value as string
 
   const url =
-    `${GRAPH_API_BASE}/${VERSION}/me/onlineMeetings/${encodeURIComponent(meetingId.value as string)}` +
+    `${GRAPH_API_BASE}/${defaultVersion()}/me/onlineMeetings/${encodeURIComponent(meetingId.value as string)}` +
     `/transcripts/${encodeURIComponent(params.transcript_id)}/content`
 
   const wantSpeakers = params.include_speaker_names ?? true

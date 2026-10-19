@@ -7,7 +7,29 @@ import { getGraphClient, initializeGraphClient } from "../src/client/graph-clien
 // Phase 2b: graph-client no longer imports the server auth module — it receives an
 // AuthStrategy. These tests lock that seam.
 describe("graph-client AuthStrategy injection", () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it.each(["download", "upload"])("honours retry settings for raw %s content", async (operation) => {
+    vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "1")
+    vi.stubEnv("MS365_GRAPH_BASE_BACKOFF_MS", "0")
+    vi.stubEnv("MS365_GRAPH_VERSION", "beta")
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("throttled", { status: 429 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "file" })))
+    vi.stubGlobal("fetch", fetchSpy)
+    const client = initializeGraphClient({ getAccessToken: async () => Right("TOKEN") })
+    const result =
+      operation === "download"
+        ? await client.downloadFileContent("file")
+        : await client.uploadFile("/me/drive/root:/x.txt:/content", "text")
+    expect(result.isRight()).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy.mock.calls[0]?.[0]).toContain("/beta/me/drive/")
+  })
 
   const stubFetch = (json: unknown, ok = true, status = 200) =>
     vi.stubGlobal(

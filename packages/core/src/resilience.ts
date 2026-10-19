@@ -194,6 +194,9 @@ export class CircuitOpenError extends Error {
 
 export const isCircuitOpenError = (err: unknown): err is CircuitOpenError => err instanceof CircuitOpenError
 
+/** Some Graph PUTs create new resources or advance an upload session rather than replacing state. */
+export type RetryPolicy = { readonly retryTransient?: boolean }
+
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
 /**
@@ -213,6 +216,7 @@ export const fetchWithResilience = async (
   breaker: CircuitBreaker,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   fetchImpl: FetchLike = fetch,
+  policy: RetryPolicy = {},
 ): Promise<Response> => {
   const remainingCooldown = breaker.checkBeforeRequest()
   if (remainingCooldown !== null) throw new CircuitOpenError(remainingCooldown)
@@ -247,7 +251,7 @@ export const fetchWithResilience = async (
     // 429 is the exception: Graph throttles before executing, so retrying a
     // throttled POST is safe and follows Graph's documented contract.
     const is429 = response !== null && response.status === 429
-    const retryAllowedByMethod = methodIsIdempotent || is429
+    const retryAllowedByMethod = (methodIsIdempotent && policy.retryTransient !== false) || is429
     const canRetry = attempt < config.maxRetries && retryAllowedByMethod
 
     if (!canRetry) {
@@ -316,5 +320,5 @@ export const resetSharedBreakerForTests = (): void => {
  * breaker and env-driven config. Config is read once per call so an env change in
  * tests takes effect without a module reload.
  */
-export const resilientFetch: FetchLike = (url, init) =>
-  fetchWithResilience(url, init, loadResilienceConfig(), getSharedBreaker())
+export const resilientFetch = (url: string, init?: RequestInit, policy?: RetryPolicy): Promise<Response> =>
+  fetchWithResilience(url, init, loadResilienceConfig(), getSharedBreaker(), undefined, undefined, policy)

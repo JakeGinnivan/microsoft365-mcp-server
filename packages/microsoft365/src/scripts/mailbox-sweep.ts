@@ -22,13 +22,17 @@
 //   4. keep     everything else (reported as "unmatched" so the rules can be tuned).
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
+
+import { loadEnvFileIfPresent } from "@sapientsai/ms-graph-core"
 
 import { getAccessToken, initializeAuth } from "../auth"
+import { resolveAuthConfig } from "../auth/config"
 import { getGraphClient, initializeGraphClient } from "../client/graph-client"
 import { runMoveBatches } from "../mail/batch-move"
 import { resolveMailboxScope } from "../mail/mailbox"
-import type { AuthConfig, GraphBatchResponse, GraphMessage } from "../types"
+import type { GraphBatchResponse, GraphMessage } from "../types"
 
 type Rules = {
   readonly mailbox?: string
@@ -124,19 +128,19 @@ const csvCell = (v: string | number): string => {
 const csv = (rows: ReadonlyArray<ReadonlyArray<string | number>>): string =>
   rows.map((r) => r.map(csvCell).join(",")).join("\n")
 
-const authConfig = (): AuthConfig => ({
-  mode: "interactive",
-  tenantId: process.env.MS365_TENANT_ID ?? "common",
-  clientId: process.env.MS365_CLIENT_ID ?? "",
-  redirectUri: process.env.MS365_REDIRECT_URI,
-})
-
 const fail = (message: string): never => {
   console.error(`[sweep] ${message}`)
   process.exit(1)
 }
 
-const main = async (): Promise<void> => {
+export const runMailboxSweep = async (): Promise<void> => {
+  loadEnvFileIfPresent()
+  if (flag("--apply") && process.env.MS365_READ_ONLY === "true")
+    fail("--apply is disabled by MS365_READ_ONLY; run without --apply for a rehearsal")
+  const config = resolveAuthConfig()
+  if (config.mode === "oauth-proxy")
+    fail("mailbox-sweep needs a credential auth mode; oauth-proxy requires an MCP client session")
+
   const rulesPath = arg("--rules") ?? fail("--rules <file> is required")
   const outDir = arg("--out") ?? "./sweep-out"
   const apply = flag("--apply")
@@ -152,7 +156,7 @@ const main = async (): Promise<void> => {
     fail("rules.mailbox is not set; pass --own-mailbox to sweep your own mailbox")
   if (!rules.folder || !rules.destination) fail("rules.folder and rules.destination are required")
 
-  const auth = await initializeAuth(authConfig())
+  const auth = await initializeAuth(config)
   if (auth.isLeft()) fail(`auth failed: ${(auth.value as { message: string }).message}`)
   initializeGraphClient({ getAccessToken })
   const client = getGraphClient().orThrow()
@@ -315,4 +319,6 @@ const main = async (): Promise<void> => {
   console.log(`moved list: ${join(outDir, "moved.csv")}`)
 }
 
-main().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  runMailboxSweep().catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)))
+}

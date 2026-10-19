@@ -17,10 +17,12 @@ import { type Either, Left, Right } from "functype/either"
 import { z } from "zod"
 
 import { getAccessToken, initializeAuth } from "./auth"
+import { resolveAuthConfig } from "./auth/config"
 import { createAzureAuthProvider } from "./auth/oauth-provider"
 import { GRAPH_API_BASE } from "./auth/scopes"
 import { withToken } from "./auth/token-context"
 import { initializeGraphClient } from "./client/graph-client"
+import { defaultVersion } from "./client/graph-version"
 import {
   batchMoveMessages,
   copyOnenotePage,
@@ -126,7 +128,6 @@ import {
   requireDraftEnabled,
   type ToolFilterConfig,
 } from "./tools/tool-registry"
-import type { AuthConfig } from "./types"
 import { resolveUploadAccessToken } from "./upload/upload-auth"
 import { auditToolCall, auditToolError, auditToolResult } from "./utils/audit"
 import { DAYS_OF_WEEK, RECURRENCE_PATTERN_TYPES, RECURRENCE_RANGE_TYPES, WEEK_INDEXES } from "./utils/recurrence"
@@ -143,51 +144,6 @@ const VERSION = (typeof __VERSION__ !== "undefined" ? __VERSION__ : "0.0.0-dev")
 // a round trip through the registry.
 const gitHash = process.env.GIT_HASH
 const BUILD = gitHash !== undefined && gitHash.length > 0 ? ` (${gitHash.slice(0, 7)})` : ""
-
-const resolveAuthConfig = (): AuthConfig => {
-  const mode = process.env.MS365_AUTH_MODE ?? "interactive"
-  const tenantId = process.env.MS365_TENANT_ID ?? "common"
-  const clientId = process.env.MS365_CLIENT_ID ?? ""
-
-  switch (mode) {
-    case "certificate":
-      return {
-        mode: "certificate",
-        tenantId,
-        clientId,
-        certPath: process.env.MS365_CERT_PATH ?? "",
-        certPassword: process.env.MS365_CERT_PASSWORD,
-      }
-    case "client-secret":
-      return {
-        mode: "client-secret",
-        tenantId,
-        clientId,
-        clientSecret: process.env.MS365_CLIENT_SECRET ?? "",
-      }
-    case "client-token":
-      return {
-        mode: "client-token",
-        accessToken: process.env.MS365_ACCESS_TOKEN,
-      }
-    case "oauth-proxy":
-      return {
-        mode: "oauth-proxy",
-        tenantId,
-        clientId,
-        clientSecret: process.env.MS365_CLIENT_SECRET ?? "",
-        baseUrl: process.env.MS365_OAUTH_BASE_URL ?? "http://localhost:3000",
-      }
-    default:
-      return {
-        mode: "interactive",
-        tenantId,
-        clientId,
-        redirectUri: process.env.MS365_REDIRECT_URI,
-        useDeviceCode: process.env.MS365_USE_DEVICE_CODE === "true",
-      }
-  }
-}
 
 const setupAuth = async () => {
   const config = resolveAuthConfig()
@@ -1875,7 +1831,9 @@ const buildUploadWorkflow = (allowedTools: Set<string>): string => {
   const hasFromPath = allowedTools.has("upload_file_from_path")
   const hasUploadConfig = allowedTools.has("get_upload_config")
 
-  const bullets: string[] = ["- Text content → upload_file (inline text, any transport)"]
+  const bullets: string[] = allowedTools.has("upload_file")
+    ? ["- Text content → upload_file (inline text, any transport)"]
+    : []
 
   if (hasFromPath) {
     bullets.push(
@@ -1890,7 +1848,7 @@ const buildUploadWorkflow = (allowedTools: Set<string>): string => {
     )
   }
 
-  return `\n\nUpload workflows:\n${bullets.join("\n")}`
+  return bullets.length > 0 ? `\n\nUpload workflows:\n${bullets.join("\n")}` : ""
 }
 
 const buildInstructions = (allowedTools: Set<string>): string => {
@@ -1923,7 +1881,7 @@ const handleUpload = async (
     return { status: 400, body: { error: 'path must end with ":/content"' } }
   }
 
-  const apiVersion = req.query("apiVersion") ?? "v1.0"
+  const apiVersion = req.query("apiVersion") ?? defaultVersion()
   const conflictBehavior = req.query("conflictBehavior") ?? "rename"
   const explicitContentType = req.query("contentType")
   const encoding = req.query("encoding")
@@ -2049,7 +2007,7 @@ const main = async () => {
     initializeGraphClient({ getAccessToken })
 
     registerTools(server, allowedTools, true)
-    mountUploadRoute(server, true)
+    if (allowedTools.has("get_upload_config")) mountUploadRoute(server, true)
 
     const port = parseInt(process.env.PORT ?? "3000", 10)
     const host = process.env.HOST ?? process.env.FASTMCP_HOST ?? "127.0.0.1"
@@ -2072,7 +2030,7 @@ const main = async () => {
     const transportType = process.env.TRANSPORT_TYPE ?? "stdio"
 
     if (transportType === "httpStream") {
-      mountUploadRoute(server, false)
+      if (allowedTools.has("get_upload_config")) mountUploadRoute(server, false)
       const port = parseInt(process.env.PORT ?? "3000", 10)
       const host = process.env.HOST ?? process.env.FASTMCP_HOST ?? "127.0.0.1"
       await server.start({ transportType: "httpStream", httpStream: { port, host, stateless: statelessTransport() } })
