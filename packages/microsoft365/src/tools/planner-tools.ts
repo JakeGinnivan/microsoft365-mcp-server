@@ -44,7 +44,13 @@ export const listPlans = async (): Promise<Either<UserError, string>> => {
     ),
   )
   const deduped = [...new Map(plans.map((p) => [p.id, p])).values()]
-  return Right(formatPlanList(deduped))
+  // Without the group list only /me/planner/plans was read, which omits every group-owned plan. An
+  // empty result then looks like "you have no plans" when the truth is "groups could not be read".
+  const groupsUnchecked = groupsResult.isLeft()
+    ? `\n\nGroup-owned plans were not checked: listing your groups failed ` +
+      `(${(groupsResult.value as { message: string }).message}). Plans you reach only through a group are missing.`
+    : ""
+  return Right(formatPlanList(deduped) + groupsUnchecked)
 }
 
 // Buckets are the columns a plan's tasks sort into. create_planner_task takes a bucket_id but had no

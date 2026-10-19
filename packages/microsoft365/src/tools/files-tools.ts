@@ -19,7 +19,7 @@ import { UserError } from "fastmcp"
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
-import { getAccessToken } from "../auth"
+import { getAccessToken, getAuthStatus } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getContextToken } from "../auth/token-context"
 import { getGraphClient } from "../client/graph-client"
@@ -37,6 +37,23 @@ const isENOENT = (error: unknown): boolean =>
 
 const MAX_INLINE_SIZE = 100 * 1024 // 100KB
 
+// OneDrive answers a token with no Files permission with 404 "Item not found" rather than 403, which
+// reads as a missing folder or an empty drive. When the token's own scopes show that is the cause, say
+// so. A token whose scopes cannot be read gets no hint, since the cause is then unknown.
+const driveError = async (action: string, error: { message: string }): Promise<UserError> => {
+  const scopes = (await getAuthStatus()).fold(
+    () => [] as ReadonlyArray<string>,
+    (status) => status.scopes,
+  )
+  const lacksFiles = scopes.length > 0 && !scopes.some((scope) => scope.startsWith("Files."))
+  return new UserError(
+    lacksFiles
+      ? `Failed to ${action}: ${error.message}. The signed-in token has no Files permission, so OneDrive ` +
+          `cannot be read — add Files.Read or Files.ReadWrite to the app registration and grant consent.`
+      : `Failed to ${action}: ${error.message}`,
+  )
+}
+
 export const listDriveItems = async (params: {
   folder_id?: string
   folder_path?: string
@@ -49,28 +66,24 @@ export const listDriveItems = async (params: {
     const path = params.folder_path.replace(/^\/+/, "")
     if (params.fetch_all_pages) {
       const result = await client.requestPaginated<GraphDriveItem>(`/me/drive/root:/${path}:/children`)
-      return result
-        .mapLeft((error) => new UserError(`Failed to list drive items: ${error.message}`))
-        .map((items) => formatDriveItemList(items))
+      if (result.isLeft()) return Left(await driveError("list drive items", result.value as { message: string }))
+      return Right(result.map((items) => formatDriveItemList(items)).orThrow())
     }
     const result = await client.listDriveItemsByPath(path)
-    return result
-      .mapLeft((error) => new UserError(`Failed to list drive items: ${error.message}`))
-      .map((response) => formatDriveItemList((response as ODataResponse<never>).value))
+    if (result.isLeft()) return Left(await driveError("list drive items", result.value as { message: string }))
+    return Right(result.map((response) => formatDriveItemList((response as ODataResponse<never>).value)).orThrow())
   }
 
   if (params.fetch_all_pages) {
     const path = params.folder_id ? `/me/drive/items/${params.folder_id}/children` : "/me/drive/root/children"
     const result = await client.requestPaginated<GraphDriveItem>(path)
-    return result
-      .mapLeft((error) => new UserError(`Failed to list drive items: ${error.message}`))
-      .map((items) => formatDriveItemList(items))
+    if (result.isLeft()) return Left(await driveError("list drive items", result.value as { message: string }))
+    return Right(result.map((items) => formatDriveItemList(items)).orThrow())
   }
 
   const result = await client.listDriveItems(params.folder_id)
-  return result
-    .mapLeft((error) => new UserError(`Failed to list drive items: ${error.message}`))
-    .map((response) => formatDriveItemList((response as ODataResponse<never>).value))
+  if (result.isLeft()) return Left(await driveError("list drive items", result.value as { message: string }))
+  return Right(result.map((response) => formatDriveItemList((response as ODataResponse<never>).value)).orThrow())
 }
 
 export const getDriveItem = async (params: { item_id: string }): Promise<Either<UserError, string>> => {
@@ -95,15 +108,21 @@ export const searchFiles = async (params: {
 
   if (params.fetch_all_pages) {
     const result = await client.searchAllFiles(params.query)
-    return result
-      .mapLeft((error) => new UserError(`Failed to search files: ${error.message}`))
-      .map((items) => formatDriveItemList(items as ReadonlyArray<GraphDriveItem>, { fromSearch: true }))
+    if (result.isLeft()) return Left(await driveError("search files", result.value as { message: string }))
+    return Right(
+      result
+        .map((items) => formatDriveItemList(items as ReadonlyArray<GraphDriveItem>, { fromSearch: true }))
+        .orThrow(),
+    )
   }
 
   const result = await client.searchFiles(params.query, { $top: params.top ?? SEARCH_DEFAULT_TOP })
-  return result
-    .mapLeft((error) => new UserError(`Failed to search files: ${error.message}`))
-    .map((response) => formatDriveItemList((response as ODataResponse<GraphDriveItem>).value, { fromSearch: true }))
+  if (result.isLeft()) return Left(await driveError("search files", result.value as { message: string }))
+  return Right(
+    result
+      .map((response) => formatDriveItemList((response as ODataResponse<GraphDriveItem>).value, { fromSearch: true }))
+      .orThrow(),
+  )
 }
 
 export const downloadFile = async (params: {

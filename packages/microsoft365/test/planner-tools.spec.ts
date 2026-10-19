@@ -159,6 +159,21 @@ describe("updatePlannerTaskDetails If-Match retry", () => {
     expect(result.value as string).toContain("G1 Plan")
   })
 
+  // Without the group list only /me/planner/plans is read, so an empty board must not read as "no plans".
+  it("says group-owned plans were not checked when listing groups fails", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/me/memberOf")) return Promise.resolve(response({ error: "forbidden" }, false, 403))
+      return Promise.resolve(response({ value: [] }))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    initializeGraphClient(auth)
+    const result = await listPlans()
+
+    expect(result.isRight()).toBe(true)
+    expect(result.value as string).toContain("Group-owned plans were not checked")
+  })
+
   // Details edit/remove: read-modify-write merge + skip-not-found (Graph's null-on-missing-key is a
   // silent no-op, so the tool reports it rather than pretending it worked).
   const detailsSnapshot = {
