@@ -504,6 +504,9 @@ const createGraphClient = (auth: AuthStrategy) => {
   // To Do
   const listTodoLists = () => request<ODataResponse<GraphTodoList>>("GET", "/me/todo/lists")
 
+  const createTodoList = (displayName: string) =>
+    request<GraphTodoList>("POST", "/me/todo/lists", { body: { displayName } })
+
   const listTodoTasks = (listId: string) =>
     request<ODataResponse<GraphTodoTask>>("GET", `/me/todo/lists/${listId}/tasks`)
 
@@ -687,6 +690,7 @@ const createGraphClient = (auth: AuthStrategy) => {
     deleteOnenotePage,
     // To Do
     listTodoLists,
+    createTodoList,
     listTodoTasks,
     createTodoTask,
     updateTodoTask,

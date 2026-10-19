@@ -36,6 +36,7 @@ import {
   createPlannerTask,
   createReplyAllDraft,
   createReplyDraft,
+  createTodoList,
   createTodoTask,
   deleteDraft,
   deleteEvent,
@@ -1670,6 +1671,17 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     execute: async (params) => unwrapResult(await listTodoLists(params)),
     domain: "todo",
     readOnly: true,
+  },
+  {
+    name: "create_todo_list",
+    description:
+      "Create a new To Do list. Graph cannot share a list — the new list is private until someone shares it in the To Do app",
+    parameters: z.object({
+      display_name: z.string().describe("Name of the list. Must not match an existing list"),
+    }),
+    execute: async (params) => unwrapResult(await createTodoList(params)),
+    domain: "todo",
+    readOnly: false,
   },
   {
     name: "list_todo_tasks",
