@@ -271,7 +271,7 @@ Search stops at 1,000 results. To check every matching message, use a filter suc
 > refuses requests that send mail without a draft (`sendMail`, and `reply`, `replyAll` or
 > `forward` on a message, including inside a `$batch`).
 
-> **Reading attachments.** `read_document` extracts *text*, so a scanned PDF or a
+> **Reading attachments.** `read_document` extracts _text_, so a scanned PDF or a
 > photographed letter comes back empty — there is no text layer to extract. Use
 > `save_attachment` for those: it writes the file locally and returns the path, leaving
 > the client to read the PDF or image with whatever it already has. That keeps

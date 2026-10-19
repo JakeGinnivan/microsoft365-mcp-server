@@ -53,6 +53,21 @@ describe("saveAttachment", () => {
 
   // The whole point of the tool: read_document returns nothing useful for these, so the message must
   // not suggest text extraction as the next step.
+  // Advertised as additive, so a second save must never replace the first — two messages can carry
+  // an attachment with the same name.
+  it("saves under a numbered name instead of overwriting an existing file", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+    await saveAttachment({ message_id: "1", out_dir: outDir })
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(Buffer.from("SECOND"), { status: 200 }))
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    const second = join(outDir, "scan (1).pdf")
+    expect(result.value).toContain(`Saved: ${second}`)
+    expect(await readFile(join(outDir, "scan.pdf"), "utf-8")).toBe("PDFBYTES")
+    expect(await readFile(second, "utf-8")).toBe("SECOND")
+  })
+
   it("tells the caller to read the file directly rather than extract text", async () => {
     mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
 
@@ -93,9 +108,7 @@ describe("saveAttachment", () => {
 
   // An attachment name is chosen by whoever sent the mail. Traversal must not reach the filesystem.
   it("neutralises path traversal in the attachment name", async () => {
-    mockClient.listAttachments.mockResolvedValue(
-      Right({ value: [{ ...PDF, name: "../../../etc/authorized_keys" }] }),
-    )
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ ...PDF, name: "../../../etc/authorized_keys" }] }))
 
     const result = await saveAttachment({ message_id: "1", out_dir: outDir })
 
