@@ -11,13 +11,16 @@ import { type Either, Left, Right } from "functype/either"
 import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
+import { describeScopeDrift, missingScopes, type RequiredScopes, resolveRequiredScopes } from "./scope-drift"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
 import {
   type AuthenticationRecordLike,
   fileCachePersistencePlugin,
   readAuthenticationRecord,
+  resolveCacheDirectory,
   writeAuthenticationRecord,
 } from "./token-cache"
+import { parseJwtScopes } from "./token-scopes"
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
@@ -143,6 +146,52 @@ const silentProbe =
     }
   }
 
+// A cached token survives a change to the app registration: the credential modes ask for
+// `.default`, so the requested scope string is identical before and after a permission is
+// added, and MSAL's cache serves the token minted under the old consent until it expires.
+// The result is a 403 from Graph on a call the registration now allows, with nothing
+// anywhere saying why.
+//
+// So the granted scopes are read back from the token and compared against what this
+// deployment needs, and a shortfall is reported with the two things that resolve it.
+//
+// Detection only, deliberately. Forcing a fresh token from here is not something this can
+// currently do safely: a claims challenge is validated by Azure and rejects anything it
+// does not recognise (`AADSTS1000004`), taking the whole sign-in down with it, and the
+// credential exposes no supported force-refresh. Clearing the cache file would also
+// discard the refresh token and force a full interactive sign-in. Telling the operator
+// precisely what is stale costs one manual step and cannot break authentication.
+export const revalidateScopes = (
+  credential: TokenCredential,
+  required: RequiredScopes,
+  readScopes: (token: string) => ReadonlyArray<string>,
+): TokenCredential => {
+  if (required.length === 0) return credential
+
+  const reported = Ref(false)
+
+  return {
+    getToken: async (scopes, options) => {
+      const token = await credential.getToken(scopes, options)
+      if (!token?.token) return token
+
+      const missing = missingScopes(readScopes(token.token), required)
+      if (missing.length === 0) return token
+
+      // Reported once: this runs on every token acquisition, and a line per Graph call
+      // would bury the message it is trying to deliver.
+      if (!reported.get()) {
+        console.error(`[Auth] ${describeScopeDrift(missing, resolveCacheDirectory())}`)
+        reported.set(true)
+      }
+
+      // The token is still returned: everything that does not need the missing scope
+      // keeps working, and Graph refuses the rest with its own error.
+      return token
+    },
+  }
+}
+
 const rememberAccount = (credential: TokenCredential, browser: TokenCredential): TokenCredential => {
   const saved = Ref(false)
   return {
@@ -179,7 +228,12 @@ const createInteractiveCredential = (
   // default browser cannot be launched on demand.
   if (config.useDeviceCode) {
     return tryCredential(
-      () => createDeviceCodeCredential(tenantId, clientId, tokenCachePersistenceOptions),
+      () =>
+        revalidateScopes(
+          createDeviceCodeCredential(tenantId, clientId, tokenCachePersistenceOptions),
+          resolveRequiredScopes(),
+          parseJwtScopes,
+        ),
       "device code",
     )
   }
@@ -205,7 +259,8 @@ const createInteractiveCredential = (
     const probed = authenticationRecord
       ? reportSilentFailure(browser, silentProbe(browser as { getToken: TokenCredential["getToken"] }))
       : browser
-    return rememberAccount(probed, browser)
+    const revalidated = revalidateScopes(probed, resolveRequiredScopes(), parseJwtScopes)
+    return rememberAccount(revalidated, browser)
   }, "interactive")
 }
 
@@ -221,10 +276,14 @@ const createCertificateCredential = (
 
   return tryCredential(
     () =>
-      new ClientCertificateCredential(config.tenantId, config.clientId, {
-        certificatePath: config.certPath,
-        certificatePassword: config.certPassword,
-      }) as TokenCredential,
+      revalidateScopes(
+        new ClientCertificateCredential(config.tenantId, config.clientId, {
+          certificatePath: config.certPath,
+          certificatePassword: config.certPassword,
+        }) as TokenCredential,
+        resolveRequiredScopes(),
+        parseJwtScopes,
+      ),
     "certificate",
   )
 }
@@ -240,7 +299,12 @@ const createClientSecretCredential = (
   }
 
   return tryCredential(
-    () => new ClientSecretCredential(config.tenantId, config.clientId, config.clientSecret) as TokenCredential,
+    () =>
+      revalidateScopes(
+        new ClientSecretCredential(config.tenantId, config.clientId, config.clientSecret) as TokenCredential,
+        resolveRequiredScopes(),
+        parseJwtScopes,
+      ),
     "client-secret",
   )
 }
