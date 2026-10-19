@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { extname, isAbsolute, join, resolve } from "node:path"
+import { basename, extname, isAbsolute, join, resolve } from "node:path"
 
 import { formatBytes } from "@sapientsai/ms-graph-core"
 import { UserError } from "fastmcp"
@@ -48,6 +48,31 @@ const safeName = (name: string | undefined, contentType: string | undefined, id:
     return extname(cleaned) ? cleaned : `${cleaned}${EXTENSION_FOR_TYPE[contentType ?? ""] ?? ""}`
   }
   return `attachment-${id.slice(0, 12)}${EXTENSION_FOR_TYPE[contentType ?? ""] ?? ".bin"}`
+}
+
+const MAX_NAME_ATTEMPTS = 100
+
+// "wx" fails rather than replacing an existing file, so saving never destroys anything already on
+// disk — including an earlier save of a same-named attachment from another message. That is what
+// lets this tool be advertised as additive.
+const numbered = (target: string, attempt: number): string => {
+  if (attempt === 0) return target
+  const ext = extname(target)
+  return join(resolve(target, ".."), `${basename(target, ext)} (${attempt})${ext}`)
+}
+
+const writeWithoutOverwriting = async (target: string, data: Buffer, attempt = 0): Promise<Either<Error, string>> => {
+  if (attempt >= MAX_NAME_ATTEMPTS) {
+    return Left(new Error(`${MAX_NAME_ATTEMPTS} files named like ${basename(target)} already exist`))
+  }
+  const candidate = numbered(target, attempt)
+  try {
+    await writeFile(candidate, data, { flag: "wx" })
+    return Right(candidate)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return writeWithoutOverwriting(target, data, attempt + 1)
+    return Left(err instanceof Error ? err : new Error(String(err)))
+  }
 }
 
 const httpError = async (response: Response): Promise<UserError> => {
@@ -142,16 +167,16 @@ export const saveAttachment = async (params: {
     return Left(new UserError(`Refusing to write outside ${dir}.`))
   }
 
-  try {
-    await mkdir(dir, { recursive: true })
-    await writeFile(target, buffer)
-  } catch (err) {
-    return Left(new UserError(`Failed to write ${target}: ${err instanceof Error ? err.message : String(err)}`))
-  }
+  const written = await mkdir(dir, { recursive: true }).then(
+    () => writeWithoutOverwriting(target, buffer),
+    (err: unknown) => Left<Error, string>(err instanceof Error ? err : new Error(String(err))),
+  )
+  if (written.isLeft()) return Left(new UserError(`Failed to write ${target}: ${written.value.message}`))
+  const saved = written.value
 
   const type = chosen.contentType ?? "application/octet-stream"
   return Right(
-    `Saved: ${target}\n` +
+    `Saved: ${saved}\n` +
       `Type: ${type}\n` +
       `Size: ${formatBytes(buffer.length)}\n\n` +
       `Read the file directly — PDFs and images do not need text extraction to be viewed.`,

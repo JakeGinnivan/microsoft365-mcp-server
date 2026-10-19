@@ -444,11 +444,16 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
         .string()
         .optional()
         .describe("Which attachment to save. Optional when the message has exactly one."),
-      out_dir: z.string().optional().describe("Directory to write into (default: the system temp directory)"),
+      out_dir: z
+        .string()
+        .optional()
+        .describe(
+          "Directory to write into (default: the system temp directory). An existing file is never replaced; a numbered name is used instead.",
+        ),
     }),
     execute: async (params) => unwrapResult(await saveAttachment(params)),
     domain: "mail",
-    readOnly: true,
+    readOnly: false,
   },
   {
     name: "send_message",
