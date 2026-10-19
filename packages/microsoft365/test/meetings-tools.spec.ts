@@ -51,6 +51,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   vi.unstubAllGlobals()
   if (savedAuthMode === undefined) delete process.env.MS365_AUTH_MODE
   else process.env.MS365_AUTH_MODE = savedAuthMode
@@ -204,6 +205,31 @@ describe("listMeetingTranscripts", () => {
 })
 
 describe("getMeetingTranscript", () => {
+  it("uses MS365_GRAPH_VERSION for meeting lookup and transcript content", async () => {
+    vi.stubEnv("MS365_GRAPH_VERSION", "beta")
+    mockClient.graphQuery.mockResolvedValueOnce(Right({ value: [{ id: MEETING_ID }] }))
+    const fetchSpy = stubFetch([{ ok: true, status: 200, body: VTT }])
+    const result = await getMeetingTranscript({
+      join_web_url: "https://teams.example/meeting",
+      transcript_id: TRANSCRIPT_ID,
+    })
+    expect(result.isRight()).toBe(true)
+    expect(mockClient.graphQuery.mock.calls[0]?.[3]).toBe("beta")
+    expect(fetchSpy.mock.calls[0]?.[0]).toContain("/beta/me/onlineMeetings/")
+  })
+
+  it("honours Graph retry settings for transcript content", async () => {
+    vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "1")
+    vi.stubEnv("MS365_GRAPH_BASE_BACKOFF_MS", "0")
+    const fetchSpy = stubFetch([
+      { ok: false, status: 503, body: "busy" },
+      { ok: true, status: 200, body: VTT },
+    ])
+    const result = await getMeetingTranscript({ meeting_id: MEETING_ID, transcript_id: TRANSCRIPT_ID })
+    expect(result.isRight()).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
   it("returns speaker-attributed text when the tenant allows it", async () => {
     const spy = stubFetch([{ ok: true, status: 200, body: VTT }])
 

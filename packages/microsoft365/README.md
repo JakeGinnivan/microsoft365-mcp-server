@@ -229,6 +229,10 @@ MS365_ORG_MODE=true                   # enable org-only tools (teams, chats, mee
 MS365_REQUIRE_DRAFT=true              # hide all send_* mail tools; force the create_*_draft + send_draft flow
 ```
 
+The HTTP `/upload` endpoint is mounted only when `get_upload_config` survives these
+filters. Read-only mode, a preset without files, or a tool pattern that excludes
+`get_upload_config` also disables the upload endpoint.
+
 Org mode is required for Teams, Chats, Meetings, Groups, Planner, and user listing. Without it, these tools are hidden to prevent 403 errors on personal accounts.
 
 ## Available Tools
@@ -485,6 +489,9 @@ A 429 is retried on every method — Graph decides to throttle before it execute
 operation, so nothing has landed server-side. A 503/504/network failure is retried only
 for idempotent methods (GET/HEAD/PUT/DELETE); retrying a POST or PATCH there could
 duplicate a side effect that already succeeded, so those surface to the caller instead.
+Uploads also avoid retries on 503/504/network failures: a renamed file may already
+exist, or a chunk may already have advanced its upload session. They still honour
+timeouts, circuit-breaker settings, and retries on 429.
 
 When the breaker is open, calls fail fast as a `throttle` error carrying `retryAfter`,
 rather than adding load to an upstream that is already failing.

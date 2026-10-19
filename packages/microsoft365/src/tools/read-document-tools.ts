@@ -1,4 +1,4 @@
-import { filenameFromPath, formatBytes } from "@sapientsai/ms-graph-core"
+import { filenameFromPath, formatBytes, resilientFetch } from "@sapientsai/ms-graph-core"
 import { UserError } from "fastmcp"
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
@@ -6,6 +6,7 @@ import { Left, Right } from "functype/either"
 import { getAccessToken } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getGraphClient } from "../client/graph-client"
+import { defaultVersion } from "../client/graph-version"
 import type { GraphApiVersion, GraphDriveItem } from "../types"
 
 const requireClient = () => {
@@ -89,7 +90,7 @@ export const readDocument = async (params: {
     return Left(new UserError((tokenResult.value as { message: string }).message))
   }
   const token = tokenResult.value as string
-  const version = params.api_version ?? "v1.0"
+  const version = params.api_version ?? defaultVersion()
 
   if (isMessageMimePath(params.path)) {
     return Left(
@@ -126,7 +127,7 @@ export const readDocument = async (params: {
   }
 
   const query = params.format ? `?format=${params.format}` : ""
-  const response = await fetch(`${GRAPH_API_BASE}/${version}${params.path}${query}`, {
+  const response = await resilientFetch(`${GRAPH_API_BASE}/${version}${params.path}${query}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!response.ok) return Left(await httpError(response))
