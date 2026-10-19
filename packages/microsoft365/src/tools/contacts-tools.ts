@@ -262,7 +262,11 @@ export const exportContacts = async (params: { out_dir?: string }): Promise<Eith
 
   try {
     await mkdir(dir, { recursive: true })
-    await writeFile(target, JSON.stringify({ exportedAt, folders: summary, contacts }, null, 2))
+    // wx: never overwrite an existing file. 0600: the export is the whole address book.
+    await writeFile(target, JSON.stringify({ exportedAt, folders: summary, contacts }, null, 2), {
+      flag: "wx",
+      mode: 0o600,
+    })
   } catch (err) {
     return Left(new UserError(`Failed to write ${target}: ${err instanceof Error ? err.message : String(err)}`))
   }

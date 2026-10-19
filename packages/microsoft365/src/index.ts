@@ -846,7 +846,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
     }),
     execute: async (params) => unwrapResult(await exportContacts(params)),
     domain: "contacts",
-    readOnly: true,
+    readOnly: false,
   },
 
   // === Files Tools ===

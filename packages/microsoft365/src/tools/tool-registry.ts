@@ -195,7 +195,15 @@ export const TOOL_METADATA: ReadonlyArray<ToolMeta> = [
   { name: "search_contacts", title: "Search Contacts", domain: "contacts", readOnly: true, orgOnly: false },
   { name: "update_contact", title: "Update Contact", domain: "contacts", readOnly: false, orgOnly: false },
   { name: "delete_contact", title: "Delete Contact", domain: "contacts", readOnly: false, orgOnly: false },
-  { name: "export_contacts", title: "Export Contacts", domain: "contacts", readOnly: true, orgOnly: false },
+  {
+    name: "export_contacts",
+    title: "Export Contacts to Local File",
+    additive: true,
+    domain: "contacts",
+    readOnly: false,
+    orgOnly: false,
+    transportOnly: "stdio",
+  },
   // Files
   { name: "list_drive_items", title: "List OneDrive Files", domain: "files", readOnly: true, orgOnly: false },
   { name: "get_drive_item", title: "Get OneDrive File Details", domain: "files", readOnly: true, orgOnly: false },
