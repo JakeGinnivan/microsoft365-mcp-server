@@ -23,6 +23,7 @@ import { getAccessToken } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getContextToken } from "../auth/token-context"
 import { getGraphClient } from "../client/graph-client"
+import { defaultVersion } from "../client/graph-version"
 import type { GraphDriveItem, ODataResponse } from "../types"
 import { formatDriveItemDetail, formatDriveItemList } from "../utils/formatters"
 
@@ -311,7 +312,7 @@ export const uploadFileFromPath = async (params: {
   const filename = filenameFromPath(params.path) ?? basename(params.local_path)
   const contentType = resolveUploadContentType(params.content_type, filename)
   const conflictBehavior = params.conflict_behavior ?? "rename"
-  const apiBase = `${GRAPH_API_BASE}/v1.0`
+  const apiBase = `${GRAPH_API_BASE}/${defaultVersion()}`
 
   console.error(
     `[Upload] local=${params.local_path} bytes=${buffer.length} contentType=${contentType} mode=${buffer.length <= SIMPLE_UPLOAD_LIMIT ? "simple" : "session"}`,
