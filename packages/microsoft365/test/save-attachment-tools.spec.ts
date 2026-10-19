@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
 vi.mock("../src/auth", () => ({ getAccessToken: vi.fn() }))
-vi.mock("../src/utils/message-refs", () => ({ resolveMessageIdOrRef: vi.fn() }))
+vi.mock("../src/utils/message-refs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/message-refs")>()),
+  resolveMessageIdOrRef: vi.fn(),
+}))
 
 import { getAccessToken } from "../src/auth"
 import { getGraphClient } from "../src/client/graph-client"
@@ -35,7 +38,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getGraphClient).mockReturnValue(Some(mockClient as never))
   vi.mocked(getAccessToken).mockResolvedValue(Right("TOKEN") as never)
-  vi.mocked(resolveMessageIdOrRef).mockImplementation((id: string) => (id === "bad-ref" ? undefined : "MSG-ID"))
+  vi.mocked(resolveMessageIdOrRef).mockImplementation((id: string) =>
+    id === "bad-ref" ? { kind: "unknown", ref: id } : { kind: "id", id: "MSG-ID" },
+  )
   outDir = join(tmpdir(), `save-attachment-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   vi.stubGlobal(
     "fetch",
@@ -45,6 +50,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   await rm(outDir, { recursive: true, force: true })
 })
 
@@ -255,5 +261,51 @@ describe("saveAttachment", () => {
 
     expect(result.isLeft()).toBe(true)
     expect((result.value as { message: string }).message).toContain("no token")
+  })
+
+  describe("mailbox", () => {
+    it("lists and downloads from the named mailbox when it is allowed", async () => {
+      vi.stubEnv("MS365_ALLOWED_MAILBOXES", "bel@example.com")
+      mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+
+      const result = await saveAttachment({ message_id: "1", out_dir: outDir, mailbox: "Bel@example.com" })
+
+      expect(result.isRight()).toBe(true)
+      expect(mockClient.listAttachments).toHaveBeenCalledWith("MSG-ID", "/users/bel%40example.com")
+      expect(resolveMessageIdOrRef).toHaveBeenCalledWith("1", "bel@example.com")
+      expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+        "https://graph.microsoft.com/v1.0/users/bel%40example.com/messages/MSG-ID/attachments/att-1/$value",
+      )
+    })
+
+    it("stays on /me when no mailbox is given", async () => {
+      mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+
+      await saveAttachment({ message_id: "1", out_dir: outDir })
+
+      expect(mockClient.listAttachments).toHaveBeenCalledWith("MSG-ID", "/me")
+      expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain("/v1.0/me/messages/MSG-ID/")
+    })
+
+    it("refuses a mailbox the deployment does not allow, before calling Graph", async () => {
+      vi.stubEnv("MS365_ALLOWED_MAILBOXES", "bel@example.com")
+
+      const result = await saveAttachment({ message_id: "1", out_dir: outDir, mailbox: "other@example.com" })
+
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as { message: string }).message).toContain("not permitted")
+      expect(mockClient.listAttachments).not.toHaveBeenCalled()
+    })
+
+    // A ref from a scan of one mailbox names an unrelated message in another; it must fail, not resolve.
+    it("rejects a ref minted for a different mailbox", async () => {
+      vi.mocked(resolveMessageIdOrRef).mockReturnValue({ kind: "wrong-mailbox", ref: "k7q2-1", mintedFor: undefined })
+      vi.stubEnv("MS365_ALLOWED_MAILBOXES", "bel@example.com")
+
+      const result = await saveAttachment({ message_id: "k7q2-1", out_dir: outDir, mailbox: "bel@example.com" })
+
+      expect(result.isLeft()).toBe(true)
+      expect(mockClient.listAttachments).not.toHaveBeenCalled()
+    })
   })
 })
