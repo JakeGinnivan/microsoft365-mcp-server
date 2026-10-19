@@ -21,6 +21,7 @@ import { createAzureAuthProvider } from "./auth/oauth-provider"
 import { GRAPH_API_BASE } from "./auth/scopes"
 import { withToken } from "./auth/token-context"
 import { initializeGraphClient } from "./client/graph-client"
+import { defaultVersion } from "./client/graph-version"
 import {
   batchMoveMessages,
   copyOnenotePage,
@@ -1675,7 +1676,9 @@ const buildUploadWorkflow = (allowedTools: Set<string>): string => {
   const hasFromPath = allowedTools.has("upload_file_from_path")
   const hasUploadConfig = allowedTools.has("get_upload_config")
 
-  const bullets: string[] = ["- Text content → upload_file (inline text, any transport)"]
+  const bullets: string[] = allowedTools.has("upload_file")
+    ? ["- Text content → upload_file (inline text, any transport)"]
+    : []
 
   if (hasFromPath) {
     bullets.push(
@@ -1690,7 +1693,7 @@ const buildUploadWorkflow = (allowedTools: Set<string>): string => {
     )
   }
 
-  return `\n\nUpload workflows:\n${bullets.join("\n")}`
+  return bullets.length > 0 ? `\n\nUpload workflows:\n${bullets.join("\n")}` : ""
 }
 
 const buildInstructions = (allowedTools: Set<string>): string => {
@@ -1723,7 +1726,7 @@ const handleUpload = async (
     return { status: 400, body: { error: 'path must end with ":/content"' } }
   }
 
-  const apiVersion = req.query("apiVersion") ?? "v1.0"
+  const apiVersion = req.query("apiVersion") ?? defaultVersion()
   const conflictBehavior = req.query("conflictBehavior") ?? "rename"
   const explicitContentType = req.query("contentType")
   const encoding = req.query("encoding")
@@ -1849,7 +1852,7 @@ const main = async () => {
     initializeGraphClient({ getAccessToken })
 
     registerTools(server, allowedTools, true)
-    mountUploadRoute(server, true)
+    if (allowedTools.has("get_upload_config")) mountUploadRoute(server, true)
 
     const port = parseInt(process.env.PORT ?? "3000", 10)
     const host = process.env.HOST ?? process.env.FASTMCP_HOST ?? "127.0.0.1"
@@ -1872,7 +1875,7 @@ const main = async () => {
     const transportType = process.env.TRANSPORT_TYPE ?? "stdio"
 
     if (transportType === "httpStream") {
-      mountUploadRoute(server, false)
+      if (allowedTools.has("get_upload_config")) mountUploadRoute(server, false)
       const port = parseInt(process.env.PORT ?? "3000", 10)
       const host = process.env.HOST ?? process.env.FASTMCP_HOST ?? "127.0.0.1"
       await server.start({ transportType: "httpStream", httpStream: { port, host, stateless: statelessTransport() } })

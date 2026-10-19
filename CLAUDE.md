@@ -8,6 +8,10 @@ This is a TypeScript library template designed to be cloned/forked for creating 
 
 **Template Usage**: See STANDARDIZATION_GUIDE.md for applying this pattern to other TypeScript projects.
 
+## Environment variable compatibility
+
+When adding or changing tools, routes, scripts, authentication, or Graph requests, follow the [environment variable compatibility rules in AGENTS.md](AGENTS.md#environment-variable-compatibility).
+
 ## Development Commands
 
 All commands delegate to `ts-builds` for consistency across projects:

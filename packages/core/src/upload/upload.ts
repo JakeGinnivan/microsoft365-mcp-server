@@ -1,6 +1,7 @@
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
+import { resilientFetch } from "../resilience"
 import type { GraphApiError, GraphDriveItem } from "../types"
 
 export const SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024 // 4 MB
@@ -60,15 +61,20 @@ export const simpleUpload = async (
   const url = `${apiBase}${path}${separator}@microsoft.graph.conflictBehavior=${conflictBehavior}`
 
   try {
-    const response = await fetch(url, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": contentType,
-        "Content-Length": String(buffer.length),
+    // A lost response may already have created a renamed file. Only a 429 is safe to retry.
+    const response = await resilientFetch(
+      url,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": contentType,
+          "Content-Length": String(buffer.length),
+        },
+        body: new Uint8Array(buffer),
       },
-      body: new Uint8Array(buffer),
-    })
+      { retryTransient: false },
+    )
 
     if (!response.ok) {
       return Left(await toGraphApiError(response, "Upload failed"))
@@ -97,7 +103,7 @@ export const sessionUpload = async (
   const sessionUrl = `${apiBase}${sessionPath}`
 
   try {
-    const createResponse = await fetch(sessionUrl, {
+    const createResponse = await resilientFetch(sessionUrl, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -141,17 +147,22 @@ const uploadChunks = async (
   const chunk = buffer.subarray(offset, end)
 
   try {
-    const chunkResponse = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Length": String(chunk.length),
-        "Content-Range": `bytes ${offset}-${end - 1}/${totalSize}`,
+    // An accepted chunk advances the session; replaying it after a lost response is unsafe.
+    const chunkResponse = await resilientFetch(
+      uploadUrl,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Length": String(chunk.length),
+          "Content-Range": `bytes ${offset}-${end - 1}/${totalSize}`,
+        },
+        body: new Uint8Array(chunk),
       },
-      body: new Uint8Array(chunk),
-    })
+      { retryTransient: false },
+    )
 
     if (!chunkResponse.ok) {
-      await fetch(uploadUrl, { method: "DELETE" }).catch(() => {})
+      await resilientFetch(uploadUrl, { method: "DELETE" }).catch(() => {})
       return Left(await toGraphApiError(chunkResponse, `Upload chunk failed at byte ${offset}`))
     }
 
