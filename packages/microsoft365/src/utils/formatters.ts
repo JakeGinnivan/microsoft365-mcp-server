@@ -302,20 +302,24 @@ export const formatMeetingTimeSuggestions = (result: GraphMeetingTimeSuggestions
 }
 
 // Contacts
+// Graph sends "" rather than omitting an unset contact field, so ?? alone renders a nameless contact as
+// "****" and a missing company as a dangling " - ".
+const nonBlank = (value: string | undefined): string | undefined => (value?.trim() ? value : undefined)
+
 export const formatContactSummary = (contact: GraphContact): string => {
-  const email = Option(contact.emailAddresses?.[0]?.address)
+  const email = Option(nonBlank(contact.emailAddresses?.[0]?.address))
     .map((e) => ` <${e}>`)
     .fold(
       () => "",
       (v) => v,
     )
-  const company = Option(contact.companyName)
+  const company = Option(nonBlank(contact.companyName))
     .map((c) => ` - ${c}`)
     .fold(
       () => "",
       (v) => v,
     )
-  return `- **${contact.displayName ?? "Unknown"}**${email}${company} (ID: ${contact.id})`
+  return `- **${nonBlank(contact.displayName) ?? "(no name)"}**${email}${company} (ID: ${contact.id})`
 }
 
 export const formatContactList = (contacts: ReadonlyArray<GraphContact>): string =>

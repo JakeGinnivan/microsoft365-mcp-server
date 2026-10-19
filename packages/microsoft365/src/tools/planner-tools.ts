@@ -17,8 +17,9 @@ const requireClient = () => {
 // /me/planner/plans only returns plans the user was explicitly added to; group-owned plans reachable
 // via membership are omitted — a skill calling this would silently see an empty board. So fan out over
 // the user's groups and merge with /me. Per-source failures (a group without Planner, a transient 4xx)
-// are skipped rather than fatal; only an all-sources failure surfaces an error, so one bad group can't
-// blank the whole board.
+// are skipped rather than fatal, so one bad group can't blank the whole board; only an all-sources
+// failure is an error. Skipped sources are still reported, /me included, because a token without group
+// permission fails every group read while /me succeeds empty, which otherwise looks exactly like "no plans".
 export const listPlans = async (): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
@@ -44,7 +45,20 @@ export const listPlans = async (): Promise<Either<UserError, string>> => {
     ),
   )
   const deduped = [...new Map(plans.map((p) => [p.id, p])).values()]
-  return Right(formatPlanList(deduped))
+  const messageOf = (result: { value: unknown }) => (result.value as { message: string }).message
+  const [ownPlans, ...groupPlans] = sources
+  const ownUnread = ownPlans.isLeft()
+    ? `\n\nYour directly assigned plans could not be read (${messageOf(ownPlans)}). Those plans are missing.`
+    : ""
+  const failedGroups = groupPlans.filter((r) => r.isLeft())
+  const groupsUnchecked = groupsResult.isLeft()
+    ? `\n\nGroup-owned plans were not checked: listing your groups failed (${messageOf(groupsResult)}). ` +
+      `Plans you reach only through a group are missing.`
+    : failedGroups.length > 0
+      ? `\n\nPlans from ${failedGroups.length} of ${groups.length} groups could not be read ` +
+        `(${messageOf(failedGroups[0])}). Plans in those groups are missing.`
+      : ""
+  return Right(formatPlanList(deduped) + ownUnread + groupsUnchecked)
 }
 
 // Buckets are the columns a plan's tasks sort into. create_planner_task takes a bucket_id but had no

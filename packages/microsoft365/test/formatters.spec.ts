@@ -19,6 +19,7 @@ import {
   chatMessageText,
   formatChatList,
   formatChatMessageList,
+  formatContactSummary,
   formatDriveItemDetail,
   formatDriveItemList,
   formatEventDetail,
@@ -212,6 +213,25 @@ describe("formatters", () => {
       })
       expect(output).toContain("No common availability found")
       expect(output).toContain("AttendeesUnavailable")
+    })
+  })
+
+  // Graph sends "" for unset contact fields, which used to render as "****" and a dangling " - ".
+  describe("contact summary", () => {
+    it("says a contact has no name instead of printing empty bold", () => {
+      const line = formatContactSummary({
+        id: "c1",
+        displayName: "",
+        companyName: "",
+        emailAddresses: [{ address: "store@example.com" }],
+      })
+      expect(line).toBe("- **(no name)** <store@example.com> (ID: c1)")
+    })
+
+    it("keeps a named contact's company", () => {
+      expect(formatContactSummary({ id: "c2", displayName: "Katie Hall", companyName: "Brightwater" })).toBe(
+        "- **Katie Hall** - Brightwater (ID: c2)",
+      )
     })
   })
 

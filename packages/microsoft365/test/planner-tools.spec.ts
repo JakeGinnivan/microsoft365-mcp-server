@@ -157,6 +157,55 @@ describe("updatePlannerTaskDetails If-Match retry", () => {
 
     expect(result.isRight()).toBe(true)
     expect(result.value as string).toContain("G1 Plan")
+    expect(result.value as string).toContain("Plans from 1 of 2 groups could not be read")
+  })
+
+  // Without group permission every group read fails while /me succeeds empty.
+  it("says group plans could not be read when every group read fails", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/me/memberOf")) return Promise.resolve(response({ value: [{ id: "g1" }, { id: "g2" }] }))
+      if (url.includes("/me/planner/plans")) return Promise.resolve(response({ value: [] }))
+      return Promise.resolve(response({ error: "forbidden" }, false, 403))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    initializeGraphClient(auth)
+    const result = await listPlans()
+
+    expect(result.isRight()).toBe(true)
+    expect(result.value as string).toContain("No plans found")
+    expect(result.value as string).toContain("Plans from 2 of 2 groups could not be read")
+  })
+
+  it("says directly assigned plans could not be read when /me fails", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/me/memberOf")) return Promise.resolve(response({ value: [{ id: "g1" }] }))
+      if (url.includes("/me/planner/plans")) return Promise.resolve(response({ error: "forbidden" }, false, 403))
+      return Promise.resolve(response({ value: [{ id: "p1", title: "G1 Plan" }] }))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    initializeGraphClient(auth)
+    const result = await listPlans()
+
+    expect(result.isRight()).toBe(true)
+    expect(result.value as string).toContain("G1 Plan")
+    expect(result.value as string).toContain("Your directly assigned plans could not be read")
+  })
+
+  // Without the group list only /me/planner/plans is read, so an empty board must not read as "no plans".
+  it("says group-owned plans were not checked when listing groups fails", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes("/me/memberOf")) return Promise.resolve(response({ error: "forbidden" }, false, 403))
+      return Promise.resolve(response({ value: [] }))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    initializeGraphClient(auth)
+    const result = await listPlans()
+
+    expect(result.isRight()).toBe(true)
+    expect(result.value as string).toContain("Group-owned plans were not checked")
   })
 
   // Details edit/remove: read-modify-write merge + skip-not-found (Graph's null-on-missing-key is a
