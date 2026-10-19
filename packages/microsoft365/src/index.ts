@@ -477,6 +477,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
         .describe(
           "Directory to write into (default: the system temp directory). An existing file is never replaced; a numbered name is used instead.",
         ),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await saveAttachment(params)),
     domain: "mail",
