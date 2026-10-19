@@ -44,6 +44,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   delete process.env.MS365_MAX_EXTRACT_BYTES
+  vi.unstubAllEnvs()
 })
 
 describe("readDocument — size caps", () => {
@@ -105,6 +106,30 @@ describe("readDocument — size caps", () => {
 })
 
 describe("readDocument — request shape", () => {
+  it("uses MS365_GRAPH_VERSION for metadata and content, with a per-call override", async () => {
+    vi.stubEnv("MS365_GRAPH_VERSION", "beta")
+    givenItem({ size: 10 })
+    const fetchSpy = givenContent("hi")
+    vi.stubGlobal("fetch", fetchSpy)
+    await readDocument({ path: "/me/drive/items/1/content" })
+    expect(mockClient.graphQuery.mock.calls.at(-1)?.[3]).toBe("beta")
+    expect(fetchSpy.mock.calls.at(-1)?.[0]).toContain("/beta/me/drive/")
+    await readDocument({ path: "/me/drive/items/1/content", api_version: "v1.0" })
+    expect(mockClient.graphQuery.mock.calls.at(-1)?.[3]).toBe("v1.0")
+    expect(fetchSpy.mock.calls.at(-1)?.[0]).toContain("/v1.0/me/drive/")
+  })
+
+  it("honours the configured retries for raw content requests", async () => {
+    vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "1")
+    vi.stubEnv("MS365_GRAPH_BASE_BACKOFF_MS", "0")
+    givenItem({ size: 10 })
+    const fetchSpy = givenContent("hi")
+    fetchSpy.mockResolvedValueOnce(new Response("busy", { status: 503 }))
+    vi.stubGlobal("fetch", fetchSpy)
+    expect((await readDocument({ path: "/me/drive/items/1/content" })).isRight()).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
   it("reads metadata from the item path, not the /content endpoint", async () => {
     givenItem({ size: 10 })
     vi.stubGlobal("fetch", givenContent("hi"))
@@ -128,6 +153,7 @@ describe("readDocument — request shape", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("/v1.0/me/drive/items/1/content"), {
       headers: { Authorization: "Bearer token-abc" },
+      signal: expect.any(AbortSignal),
     })
   })
 
