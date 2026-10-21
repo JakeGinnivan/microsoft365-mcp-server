@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, extname, isAbsolute, join, resolve } from "node:path"
 
-import { formatBytes } from "@sapientsai/ms-graph-core"
+import { formatBytes, resilientFetch } from "@sapientsai/ms-graph-core"
 import { UserError } from "fastmcp"
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
@@ -10,6 +10,7 @@ import { Left, Right } from "functype/either"
 import { getAccessToken } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getGraphClient } from "../client/graph-client"
+import { defaultVersion } from "../client/graph-version"
 import type { GraphAttachment } from "../types"
 import { resolveMessageIdOrRef } from "../utils/message-refs"
 
@@ -149,8 +150,8 @@ export const saveAttachment = async (params: {
   if (tokenResult.isLeft()) return Left(new UserError((tokenResult.value as { message: string }).message))
   const token = tokenResult.value as string
 
-  const response = await fetch(
-    `${GRAPH_API_BASE}/v1.0/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(chosen.id)}/$value`,
+  const response = await resilientFetch(
+    `${GRAPH_API_BASE}/${defaultVersion()}/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(chosen.id)}/$value`,
     { headers: { Authorization: `Bearer ${token}` } },
   )
   if (!response.ok) return Left(await httpError(response))

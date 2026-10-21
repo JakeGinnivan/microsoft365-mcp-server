@@ -36,10 +36,38 @@ beforeEach(() => {
 
 afterEach(async () => {
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   await rm(outDir, { recursive: true, force: true })
 })
 
 describe("saveAttachment", () => {
+  it("uses the configured Graph API version for the download", async () => {
+    vi.stubEnv("MS365_GRAPH_VERSION", "beta")
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+    expect(result.isRight()).toBe(true)
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain("/beta/me/messages/")
+  })
+
+  it("honours the Graph retry settings when downloading attachment bytes", async () => {
+    vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "1")
+    vi.stubEnv("MS365_GRAPH_BASE_BACKOFF_MS", "0")
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+    vi.mocked(fetch).mockResolvedValueOnce(new Response("busy", { status: 503 }))
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+    expect(result.isRight()).toBe(true)
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not retry when MS365_GRAPH_MAX_RETRIES is zero", async () => {
+    vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "0")
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+    vi.mocked(fetch).mockResolvedValueOnce(new Response("busy", { status: 503 }))
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+    expect(result.isLeft()).toBe(true)
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it("writes the single attachment and returns its path", async () => {
     mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
 
