@@ -36,19 +36,51 @@ const EXTENSION_FOR_TYPE: Record<string, string> = {
   "image/tiff": ".tif",
 }
 
+const ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"
+
+// Windows refuses these as a base name whatever follows the first dot, so "CON.pdf" fails too.
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
+
+// Most filesystems cap a name at 255 bytes, not characters. This leaves room for the " (99)" that
+// writeWithoutOverwriting may add.
+const MAX_NAME_BYTES = 200
+const MAX_EXTENSION_BYTES = 16
+
+// Cuts on character boundaries so a multi-byte character is never split.
+const truncateToBytes = (text: string, maxBytes: number): string => {
+  const chars = Array.from(text)
+  const overflowAt = chars.findIndex((_, i) => Buffer.byteLength(chars.slice(0, i + 1).join("")) > maxBytes)
+  return overflowAt === -1 ? text : chars.slice(0, overflowAt).join("")
+}
+
 // Windows-illegal characters plus path separators and control codes. A Graph attachment name is
 // attacker-influenced in the sense that anyone who emails you picks it, so it never reaches the
 // filesystem unfiltered — "../../.ssh/authorized_keys" is a legal attachment name.
-const safeName = (name: string | undefined, contentType: string | undefined, id: string): string => {
-  const cleaned = (name ?? "")
+const safeName = (attachment: GraphAttachment): string => {
+  const cleaned = (attachment.name ?? "")
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f<>:"/\\|?*]/g, "_")
     .replace(/^\.+/, "")
     .trim()
-  if (cleaned) {
-    return extname(cleaned) ? cleaned : `${cleaned}${EXTENSION_FOR_TYPE[contentType ?? ""] ?? ""}`
-  }
-  return `attachment-${id.slice(0, 12)}${EXTENSION_FOR_TYPE[contentType ?? ""] ?? ".bin"}`
+  const name = cleaned || `attachment-${attachment.id.slice(0, 12)}`
+
+  // An attached email's $value is MIME and its name is the subject, so a dot in the subject
+  // ("Q3 v1.2") is not an extension.
+  const isItem = attachment["@odata.type"] === ITEM_ATTACHMENT
+  const ownExtension = extname(name)
+  const keepsOwnExtension =
+    ownExtension !== "" &&
+    Buffer.byteLength(ownExtension) <= MAX_EXTENSION_BYTES &&
+    (!isItem || ownExtension.toLowerCase() === ".eml")
+  const extension = keepsOwnExtension
+    ? ownExtension
+    : isItem
+      ? ".eml"
+      : (EXTENSION_FOR_TYPE[attachment.contentType ?? ""] ?? (cleaned ? "" : ".bin"))
+  const stem = keepsOwnExtension ? name.slice(0, -ownExtension.length) : name
+
+  const allowedStem = WINDOWS_RESERVED.test(stem.split(".")[0]?.trim() ?? "") ? `_${stem}` : stem
+  return `${truncateToBytes(allowedStem, MAX_NAME_BYTES - Buffer.byteLength(extension))}${extension}`
 }
 
 const MAX_NAME_ATTEMPTS = 100
@@ -68,7 +100,8 @@ const writeWithoutOverwriting = async (target: string, data: Buffer, attempt = 0
   }
   const candidate = numbered(target, attempt)
   try {
-    await writeFile(candidate, data, { flag: "wx" })
+    // The default folder is tmpdir(), which other users on the machine can list.
+    await writeFile(candidate, data, { flag: "wx", mode: 0o600 })
     return Right(candidate)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") return writeWithoutOverwriting(target, data, attempt + 1)
@@ -159,7 +192,7 @@ export const saveAttachment = async (params: {
   const buffer = Buffer.from(await response.arrayBuffer())
 
   const dir = params.out_dir ? (isAbsolute(params.out_dir) ? params.out_dir : resolve(params.out_dir)) : tmpdir()
-  const filename = safeName(chosen.name, chosen.contentType, chosen.id)
+  const filename = safeName(chosen)
   const target = join(dir, filename)
 
   // join() on a sanitised filename cannot escape dir, but assert it rather than trust the reasoning —
@@ -175,7 +208,8 @@ export const saveAttachment = async (params: {
   if (written.isLeft()) return Left(new UserError(`Failed to write ${target}: ${written.value.message}`))
   const saved = written.value
 
-  const type = chosen.contentType ?? "application/octet-stream"
+  const type =
+    chosen.contentType ?? (chosen["@odata.type"] === ITEM_ATTACHMENT ? "message/rfc822" : "application/octet-stream")
   return Right(
     `Saved: ${saved}\n` +
       `Type: ${type}\n` +

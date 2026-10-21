@@ -1,6 +1,6 @@
-import { readFile, rm } from "node:fs/promises"
+import { readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 import { Some } from "functype"
 import { Left, Right } from "functype/either"
@@ -79,8 +79,14 @@ describe("saveAttachment", () => {
     expect(await readFile(target, "utf-8")).toBe("PDFBYTES")
   })
 
-  // The whole point of the tool: read_document returns nothing useful for these, so the message must
-  // not suggest text extraction as the next step.
+  it.skipIf(process.platform === "win32")("makes the saved file readable only by its owner", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
+
+    await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect((await stat(join(outDir, "scan.pdf"))).mode & 0o777).toBe(0o600)
+  })
+
   // Advertised as additive, so a second save must never replace the first — two messages can carry
   // an attachment with the same name.
   it("saves under a numbered name instead of overwriting an existing file", async () => {
@@ -96,6 +102,8 @@ describe("saveAttachment", () => {
     expect(await readFile(second, "utf-8")).toBe("SECOND")
   })
 
+  // The whole point of the tool: read_document returns nothing useful for these, so the message must
+  // not suggest text extraction as the next step.
   it("tells the caller to read the file directly rather than extract text", async () => {
     mockClient.listAttachments.mockResolvedValue(Right({ value: [PDF] }))
 
@@ -176,6 +184,82 @@ describe("saveAttachment", () => {
 
     expect(result.isRight()).toBe(true)
     expect(result.value).toMatch(/attachment-att-1\.pdf/)
+  })
+
+  it.each([
+    ["CON.pdf", "_CON.pdf"],
+    ["nul", "_nul.pdf"],
+    ["com1.tar.gz", "_com1.tar.gz"],
+    ["Lpt9 .txt", "_Lpt9 .txt"],
+  ])("prefixes the Windows reserved name %s", async (name, expected) => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ ...PDF, name }] }))
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect(result.value).toContain(`Saved: ${join(outDir, expected)}`)
+  })
+
+  it("keeps names that only start like a reserved name", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ ...PDF, name: "Console log.pdf" }] }))
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect(result.value).toContain(`Saved: ${join(outDir, "Console log.pdf")}`)
+  })
+
+  // An attached email's name is its subject and its $value is MIME, with no content type.
+  it("saves an attached email as .eml even when its subject contains a dot", async () => {
+    mockClient.listAttachments.mockResolvedValue(
+      Right({
+        value: [
+          {
+            id: "att-3",
+            name: "Re: Q3 report v1.2",
+            contentType: undefined,
+            "@odata.type": "#microsoft.graph.itemAttachment",
+          },
+        ],
+      }),
+    )
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect(result.value).toContain(`Saved: ${join(outDir, "Re_ Q3 report v1.2.eml")}`)
+    expect(result.value).toContain("Type: message/rfc822")
+  })
+
+  it("does not double the extension of an attached email already named .eml", async () => {
+    mockClient.listAttachments.mockResolvedValue(
+      Right({ value: [{ id: "att-3", name: "forwarded.EML", "@odata.type": "#microsoft.graph.itemAttachment" }] }),
+    )
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect(result.value).toContain(`Saved: ${join(outDir, "forwarded.EML")}`)
+  })
+
+  // Filesystems limit names in bytes, so multi-byte characters hit the limit long before 255 of them.
+  it("shortens a long name to fit the filesystem and keeps its extension", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ ...PDF, name: `${"請求書".repeat(60)}.pdf` }] }))
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect(result.isRight()).toBe(true)
+    const saved = basename((result.value as string).split("\n")[0].replace("Saved: ", ""))
+    expect(saved.endsWith(".pdf")).toBe(true)
+    expect(Buffer.byteLength(saved)).toBeLessThanOrEqual(200)
+  })
+
+  it("treats an overlong extension as part of the name", async () => {
+    mockClient.listAttachments.mockResolvedValue(Right({ value: [{ ...PDF, name: `report.${"x".repeat(300)}` }] }))
+
+    const result = await saveAttachment({ message_id: "1", out_dir: outDir })
+
+    expect(result.isRight()).toBe(true)
+    const saved = basename((result.value as string).split("\n")[0].replace("Saved: ", ""))
+    expect(saved.startsWith("report.xxx")).toBe(true)
+    expect(saved.endsWith(".pdf")).toBe(true)
+    expect(Buffer.byteLength(saved)).toBeLessThanOrEqual(200)
   })
 
   // referenceAttachment is a link to OneDrive, not bytes — fetching its $value fails confusingly.
