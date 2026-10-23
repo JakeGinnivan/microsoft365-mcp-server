@@ -495,9 +495,11 @@ export const sendDraft = async (params: { message_id: string }): Promise<Either<
 
 // Graph lets subject, body and recipients change only while a message is a draft, but DELETE works
 // on any message. Checking isDraft first keeps the draft tools from touching received or sent mail.
+// `rule` names what the calling tool needs a draft for, so its refusal explains the right thing.
 const fetchDraft = async (
   client: NonNullable<ReturnType<typeof requireClient>>,
   messageId: string,
+  rule = "Only drafts can be edited or deleted",
 ): Promise<Either<UserError, GraphMessage>> => {
   const result = await client.getDraftState(messageId)
   if (result.isLeft())
@@ -506,8 +508,7 @@ const fetchDraft = async (
   if (message.isDraft !== true) {
     return Left(
       new UserError(
-        `Message ${messageId} is not a draft. Only drafts can be edited or deleted; find drafts with ` +
-          "list_messages in the drafts folder.",
+        `Message ${messageId} is not a draft. ${rule}; find drafts with ` + "list_messages in the drafts folder.",
       ),
     )
   }
@@ -600,7 +601,7 @@ export const getAttachmentUploadConfig = async (params: {
   if (messageId.isLeft()) return messageId as Either<UserError, string>
   const id = messageId.orThrow()
 
-  const draft = await fetchDraft(client, id)
+  const draft = await fetchDraft(client, id, "Attachments can only be added to drafts")
   if (draft.isLeft()) return Left(draft.value as UserError)
 
   const baseUrl = resolveUploadBaseUrl()

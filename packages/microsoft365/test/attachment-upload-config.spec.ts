@@ -65,7 +65,9 @@ describe("getAttachmentUploadConfig", () => {
     const result = await getAttachmentUploadConfig({ message_id: "AAMkSentMessage", name: "a.pdf" })
 
     expect(result.isLeft()).toBe(true)
-    expect((result.value as Error).message).toContain("is not a draft")
+    const message = (result.value as Error).message
+    expect(message).toContain("is not a draft. Attachments can only be added to drafts")
+    expect(message).not.toContain("edited or deleted")
   })
 
   it("requires a file name before reading the message", async () => {
