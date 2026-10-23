@@ -70,7 +70,7 @@ describe("updateDraft", () => {
 
     const result = await updateDraft({ message_id: "m1", subject: "Changed" })
 
-    expect(message(result)).toContain("is not a draft")
+    expect(message(result)).toContain("is not a draft. Only drafts can be edited or deleted")
     expect(mockClient.updateMessage).not.toHaveBeenCalled()
   })
 
@@ -108,7 +108,7 @@ describe("deleteDraft", () => {
 
     const result = await deleteDraft({ message_id: "m1" })
 
-    expect(message(result)).toContain("is not a draft")
+    expect(message(result)).toContain("is not a draft. Only drafts can be edited or deleted")
     expect(mockClient.deleteMessage).not.toHaveBeenCalled()
   })
 
