@@ -142,6 +142,19 @@ describe("interactive authentication mode", () => {
       expect(log).toHaveBeenCalledWith(expect.stringContaining("Cached credentials could not be reused"))
     })
 
+    it("explains a failure after sign-in instead of passing on identity's advice to call authenticate()", async () => {
+      vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
+        .mockRejectedValueOnce(required())
+        .mockRejectedValueOnce(required())
+      vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate").mockResolvedValue(record)
+      const credential = createCredential(config).value as TokenCredential
+
+      const failure = await credential.getToken("scope").catch((e: unknown) => e)
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).toContain("Sign-in completed, but a token could still not be obtained")
+      expect((failure as Error).cause).toBeInstanceOf(AuthenticationRequiredError)
+    })
+
     it("does not turn other failures into a sign-in", async () => {
       const error = new Error("network down")
       vi.spyOn(InteractiveBrowserCredential.prototype, "getToken").mockRejectedValue(error)

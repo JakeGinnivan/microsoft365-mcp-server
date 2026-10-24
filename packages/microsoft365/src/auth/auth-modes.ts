@@ -139,7 +139,18 @@ const signInWhenRequired = (
         const inFlight = pending.get() ?? signIn(scopes, options).finally(() => pending.set(undefined))
         pending.set(inFlight)
         await inFlight
-        return credential.getToken(scopes, options)
+        try {
+          return await credential.getToken(scopes, options)
+        } catch (retryError) {
+          // Left as is, this surfaces identity's "Automatic authentication has been
+          // disabled... call authenticate()", which reads as advice to the user and is
+          // wrong: authenticate() has just been called.
+          throw new Error(
+            "[Auth] Sign-in completed, but a token could still not be obtained for the signed-in account. " +
+              `Set AZURE_LOG_LEVEL=info to see why. (${retryError instanceof Error ? retryError.message : String(retryError)})`,
+            { cause: retryError },
+          )
+        }
       }
     },
   }
