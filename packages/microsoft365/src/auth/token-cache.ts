@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -25,8 +25,14 @@ import type { ICachePlugin } from "@azure/msal-node"
 // The token cache is a bearer credential. Anyone who can read the file can act as the
 // signed-in user until the refresh token expires, so the file permissions are the whole
 // of the security model here and are enforced on both write and read.
+//
+// On Windows that model does not carry over: Node reports a mode synthesised from the
+// read-only attribute (0666 or 0444), never 0600, and access is governed by ACLs that
+// the mode cannot express. There the file inherits the ACL of the user's profile
+// directory, which is already owner-only, and the mode check is skipped.
 
 const OWNER_ONLY = 0o600
+const GROUP_OR_OTHER = 0o077
 const DIR_OWNER_ONLY = 0o700
 
 /**
@@ -51,10 +57,21 @@ const cacheFileName = (name: string): string => {
 
 const isMissing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT"
 
+const isAlreadyPresent = (error: unknown): boolean =>
+  error instanceof Error && "code" in error && error.code === "EEXIST"
+
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
+const discard = (path: string): void => {
+  try {
+    unlinkSync(path)
+  } catch {
+    // Best effort. If it cannot be removed, not trusting it is what matters.
+  }
+}
+
 /**
- * Reads the cache, refusing any file that is readable by more than its owner.
+ * Reads the cache, refusing any file that group or others can access.
  *
  * Loosened permissions mean the token may already have been exposed, so the file is
  * discarded rather than used: re-authenticating costs one sign-in, whereas trusting a
@@ -64,16 +81,12 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 const readCache = (path: string): string | undefined => {
   try {
     const mode = statSync(path).mode & 0o777
-    if (mode !== OWNER_ONLY) {
+    if (process.platform !== "win32" && (mode & GROUP_OR_OTHER) !== 0) {
       console.error(
         `[Auth] Ignoring token cache at ${path}: permissions are ${mode.toString(8)}, expected 600. ` +
           "The file may have been exposed, so it will be discarded and a fresh sign-in requested.",
       )
-      try {
-        unlinkSync(path)
-      } catch {
-        // Best effort. If it cannot be removed, not trusting it is what matters.
-      }
+      discard(path)
       return undefined
     }
     return readFileSync(path, "utf8")
@@ -92,15 +105,25 @@ const readCache = (path: string): string | undefined => {
  * half-written cache — an outcome that would look like corruption and force a
  * re-authentication. The temporary file is created 0600 up front rather than being
  * relaxed afterwards, so the token is never briefly world-readable.
+ *
+ * The temporary file must be newly created (`wx`). Opening an existing path would follow
+ * a symlink planted there — in a shared MS365_TOKEN_CACHE_PATH, a way to redirect the
+ * token — and would keep a leftover file's looser permissions. A leftover from a crash
+ * is removed (unlinking removes a symlink itself, not its target) and creation retried
+ * once; if something recreates it in between, the write is abandoned rather than raced.
  */
 const writeCache = (path: string, contents: string): void => {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: DIR_OWNER_ONLY })
     const temporary = `${path}.${process.pid}.tmp`
-    writeFileSync(temporary, contents, { encoding: "utf8", mode: OWNER_ONLY })
-    // writeFileSync honours mode only when it creates the file; a leftover temp from a
-    // previous crash would keep its old permissions, so set them explicitly.
-    chmodSync(temporary, OWNER_ONLY)
+    const create = (): void => writeFileSync(temporary, contents, { encoding: "utf8", mode: OWNER_ONLY, flag: "wx" })
+    try {
+      create()
+    } catch (error) {
+      if (!isAlreadyPresent(error)) throw error
+      unlinkSync(temporary)
+      create()
+    }
     renameSync(temporary, path)
   } catch (error) {
     // A cache that cannot be written is a lost convenience, not a failed sign-in, so
@@ -119,7 +142,16 @@ export const createFileCachePlugin = (name: string, directory = resolveCacheDire
   return {
     beforeCacheAccess: (context) => {
       const contents = readCache(path)
-      if (contents) context.tokenCache.deserialize(contents)
+      if (contents) {
+        // Left in place, a corrupt cache would be re-read and rejected on every access
+        // without ever being replaced, so it is removed and treated as empty.
+        try {
+          context.tokenCache.deserialize(contents)
+        } catch (error) {
+          console.error(`[Auth] Discarding unreadable token cache at ${path}: ${messageOf(error)}`)
+          discard(path)
+        }
+      }
       return Promise.resolve()
     },
     afterCacheAccess: (context) => {

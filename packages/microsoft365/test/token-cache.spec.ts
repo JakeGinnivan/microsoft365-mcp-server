@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto"
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -134,6 +145,34 @@ describe("token cache", () => {
       expect(reader.deserialize).not.toHaveBeenCalled()
     })
 
+    it("accepts a cache its owner has made read-only", async () => {
+      const plugin = createFileCachePlugin("readonly", directory)
+      await plugin.afterCacheAccess(cacheContext('{"token":"abc"}').context)
+      chmodSync(join(directory, findCacheFile(directory)), 0o400)
+
+      const reader = cacheContext("")
+      await plugin.beforeCacheAccess(reader.context)
+
+      expect(reader.deserialize).toHaveBeenCalledWith('{"token":"abc"}')
+    })
+
+    // Node on Windows reports 0666 or 0444 for every file, so a POSIX mode check there
+    // would discard the cache on every start.
+    it("does not judge the cache by its mode on Windows", async () => {
+      const plugin = createFileCachePlugin("windows", directory)
+      await plugin.afterCacheAccess(cacheContext('{"token":"abc"}').context)
+      const path = join(directory, findCacheFile(directory))
+      chmodSync(path, 0o666)
+
+      const reader = cacheContext("")
+      const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+      await withPlatform("win32", () => plugin.beforeCacheAccess(reader.context))
+
+      expect(reader.deserialize).toHaveBeenCalledWith('{"token":"abc"}')
+      expect(existsSync(path)).toBe(true)
+      expect(log).not.toHaveBeenCalled()
+    })
+
     it("does not reuse a leftover temp file's permissions", async () => {
       const plugin = createFileCachePlugin("stale", directory)
       const path = join(directory, cacheFileNameFor("stale"))
@@ -146,7 +185,49 @@ describe("token cache", () => {
     })
   })
 
+  describe("temporary file", () => {
+    it("does not write through a symlink planted at the temp path", async () => {
+      const plugin = createFileCachePlugin("planted", directory)
+      const path = join(directory, cacheFileNameFor("planted"))
+      const target = join(directory, "attacker-owned")
+      writeFileSync(target, "untouched")
+      symlinkSync(target, `${path}.${process.pid}.tmp`)
+
+      await plugin.afterCacheAccess(cacheContext('{"token":"secret"}').context)
+
+      expect(readFileSync(target, "utf8")).toBe("untouched")
+      expect(readFileSync(path, "utf8")).toBe('{"token":"secret"}')
+    })
+
+    it("replaces a leftover temp file from an earlier crash", async () => {
+      const plugin = createFileCachePlugin("leftover", directory)
+      const path = join(directory, cacheFileNameFor("leftover"))
+      writeFileSync(`${path}.${process.pid}.tmp`, "stale")
+
+      await plugin.afterCacheAccess(cacheContext('{"token":"fresh"}').context)
+
+      expect(readFileSync(path, "utf8")).toBe('{"token":"fresh"}')
+      expect(existsSync(`${path}.${process.pid}.tmp`)).toBe(false)
+    })
+  })
+
   describe("failure handling", () => {
+    it("discards a cache that cannot be deserialised", async () => {
+      const plugin = createFileCachePlugin("corrupt", directory)
+      await plugin.afterCacheAccess(cacheContext("{not json").context)
+      const path = join(directory, findCacheFile(directory))
+
+      const reader = cacheContext("")
+      reader.deserialize.mockImplementation(() => {
+        throw new SyntaxError("Unexpected token n in JSON")
+      })
+      const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+      await expect(plugin.beforeCacheAccess(reader.context)).resolves.toBeUndefined()
+      expect(existsSync(path)).toBe(false)
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("Discarding unreadable token cache"))
+    })
+
     it("degrades to in-memory when the cache cannot be written", async () => {
       // A file where the directory should be makes every write fail.
       const blocked = join(directory, "blocked")
@@ -174,6 +255,16 @@ describe("token cache", () => {
     })
   })
 })
+
+const withPlatform = async <T>(platform: NodeJS.Platform, fn: () => Promise<T>): Promise<T> => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!
+  Object.defineProperty(process, "platform", { ...original, value: platform })
+  try {
+    return await fn()
+  } finally {
+    Object.defineProperty(process, "platform", original)
+  }
+}
 
 // The plugin owns its naming scheme; tests locate the file rather than duplicating it.
 const findCacheFile = (directory: string): string => {
