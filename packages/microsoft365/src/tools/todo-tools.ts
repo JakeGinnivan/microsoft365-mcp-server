@@ -36,7 +36,9 @@ export const listTodoLists = async (params?: { fetch_all_pages?: boolean }): Pro
 // which is indistinguishable from the first in every client. Existing lists are read
 // first and an exact match refused, because the usual cause is a caller that did not
 // know the list was already there — and a duplicate is worse than the error, since
-// tasks then scatter across two lists nobody can tell apart.
+// tasks then scatter across two lists nobody can tell apart. Every page is read, and a
+// failed read refuses rather than creating blind, since the guard is only as good as
+// the list it checks against.
 export const createTodoList = async (params: { display_name: string }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
@@ -44,18 +46,23 @@ export const createTodoList = async (params: { display_name: string }): Promise<
   const name = params.display_name.trim()
   if (name.length === 0) return Left(new UserError("A To Do list needs a display_name."))
 
-  const existing = await client.listTodoLists()
-  if (existing.isRight()) {
-    const lists = (existing.orThrow() as ODataResponse<GraphTodoList>).value
-    const clash = lists.find((list) => list.displayName?.trim().toLowerCase() === name.toLowerCase())
-    if (clash) {
-      return Left(
-        new UserError(
-          `A To Do list named "${clash.displayName}" already exists (ID: ${clash.id}). ` +
-            "Use it, or choose a different name — two lists with one name cannot be told apart.",
-        ),
-      )
-    }
+  const existing = await client.requestPaginated<GraphTodoList>("/me/todo/lists")
+  if (existing.isLeft()) {
+    return Left(
+      new UserError(
+        `Failed to read existing To Do lists, so the list was not created: ${(existing.value as GraphApiError).message}`,
+      ),
+    )
+  }
+  const lists = existing.value as GraphTodoList[]
+  const clash = lists.find((list) => list.displayName?.trim().toLowerCase() === name.toLowerCase())
+  if (clash) {
+    return Left(
+      new UserError(
+        `A To Do list named "${clash.displayName}" already exists (ID: ${clash.id}). ` +
+          "Use it, or choose a different name — two lists with one name cannot be told apart.",
+      ),
+    )
   }
 
   const result = await client.createTodoList(name)

@@ -1,5 +1,5 @@
 import { Some } from "functype"
-import { Right } from "functype/either"
+import { Left, Right } from "functype/either"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/client/graph-client", () => ({
@@ -16,6 +16,7 @@ const mockClient = {
   deleteTodoTask: vi.fn(),
   listTodoLists: vi.fn(),
   createTodoList: vi.fn(),
+  requestPaginated: vi.fn(),
 }
 
 const QUARTERLY = {
@@ -33,7 +34,7 @@ beforeEach(() => {
 describe("todo-tools", () => {
   describe("createTodoList", () => {
     it("should create a list when the name is free", async () => {
-      mockClient.listTodoLists.mockResolvedValue(Right({ value: [{ id: "l1", displayName: "Household" }] }))
+      mockClient.requestPaginated.mockResolvedValue(Right([{ id: "l1", displayName: "Household" }]))
       mockClient.createTodoList.mockResolvedValue(Right({ id: "l2", displayName: "Renovation" }))
 
       const result = await createTodoList({ display_name: "Renovation" })
@@ -45,7 +46,7 @@ describe("todo-tools", () => {
     // Graph happily creates a second list with the same displayName, and no client can
     // then tell the two apart — so tasks scatter across both.
     it("should refuse a name an existing list already uses, case-insensitively", async () => {
-      mockClient.listTodoLists.mockResolvedValue(Right({ value: [{ id: "l1", displayName: "Household" }] }))
+      mockClient.requestPaginated.mockResolvedValue(Right([{ id: "l1", displayName: "Household" }]))
 
       const result = await createTodoList({ display_name: "household" })
 
@@ -53,16 +54,43 @@ describe("todo-tools", () => {
       expect(mockClient.createTodoList).not.toHaveBeenCalled()
     })
 
+    it("should check every page of lists, not just the first", async () => {
+      mockClient.requestPaginated.mockResolvedValue(Right([]))
+      mockClient.createTodoList.mockResolvedValue(Right({ id: "l2", displayName: "Renovation" }))
+
+      await createTodoList({ display_name: "Renovation" })
+
+      expect(mockClient.requestPaginated).toHaveBeenCalledWith("/me/todo/lists")
+      expect(mockClient.listTodoLists).not.toHaveBeenCalled()
+    })
+
+    // A read failure leaves the duplicate check blind, so creating anyway could still
+    // produce the duplicate the guard exists to prevent.
+    it("should refuse to create when the existing lists cannot be read", async () => {
+      mockClient.requestPaginated.mockResolvedValue(Left({ message: "Service unavailable" }))
+
+      const result = await createTodoList({ display_name: "Renovation" })
+
+      expect(result.isLeft()).toBe(true)
+      expect(
+        result.fold(
+          (error) => error.message,
+          () => "",
+        ),
+      ).toContain("Service unavailable")
+      expect(mockClient.createTodoList).not.toHaveBeenCalled()
+    })
+
     it("should refuse a blank name without calling Graph", async () => {
       const result = await createTodoList({ display_name: "   " })
 
       expect(result.isLeft()).toBe(true)
-      expect(mockClient.listTodoLists).not.toHaveBeenCalled()
+      expect(mockClient.requestPaginated).not.toHaveBeenCalled()
       expect(mockClient.createTodoList).not.toHaveBeenCalled()
     })
 
     it("should trim the name before sending it", async () => {
-      mockClient.listTodoLists.mockResolvedValue(Right({ value: [] }))
+      mockClient.requestPaginated.mockResolvedValue(Right([]))
       mockClient.createTodoList.mockResolvedValue(Right({ id: "l2", displayName: "Renovation" }))
 
       await createTodoList({ display_name: "  Renovation  " })
