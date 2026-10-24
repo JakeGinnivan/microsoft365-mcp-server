@@ -63,7 +63,7 @@ export const requireDraftMessage = async (
     if (message.isDraft !== true) {
       return Left({
         type: "api",
-        message: "Only drafts can take attachments; this message is not a draft.",
+        message: "This message is not a draft. Attachments can only be added to drafts.",
         status: 409,
       })
     }
