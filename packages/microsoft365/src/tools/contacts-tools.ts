@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { link, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { isAbsolute, join, resolve } from "node:path"
+import { basename, isAbsolute, join, resolve } from "node:path"
 
 import { UserError } from "fastmcp"
 import type { Either } from "functype/either"
@@ -300,15 +301,26 @@ export const exportContacts = async (params: { out_dir?: string }): Promise<Eith
   const dir = params.out_dir ? (isAbsolute(params.out_dir) ? params.out_dir : resolve(params.out_dir)) : tmpdir()
   const target = join(dir, `contacts-${exportedAt.replace(/[:.]/g, "-")}.json`)
 
+  // Written beside the target and published only once complete, so a failed write (a full
+  // disk, say) never leaves a truncated export where a good one is expected.
+  const temp = join(dir, `.${basename(target)}.${randomUUID()}.tmp`)
+
   try {
     await mkdir(dir, { recursive: true })
-    // wx: never overwrite an existing file. 0600: the export is the whole address book.
-    await writeFile(target, JSON.stringify({ exportedAt, folders: summary, contacts }, null, 2), {
+    // wx: never reuse an existing file. 0600: the export is the whole address book.
+    await writeFile(temp, JSON.stringify({ exportedAt, folders: summary, contacts }, null, 2), {
       flag: "wx",
       mode: 0o600,
     })
+    // link rather than rename: rename would silently replace a file already at the target,
+    // while link fails with EEXIST and leaves it alone.
+    await link(temp, target)
   } catch (err) {
     return Left(new UserError(`Failed to write ${target}: ${err instanceof Error ? err.message : String(err)}`))
+  } finally {
+    // After a successful link this only drops the second name; a stray temp file is not
+    // worth failing an export that has already been written.
+    await rm(temp, { force: true }).catch(() => undefined)
   }
 
   const folderLines = summary

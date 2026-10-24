@@ -1,4 +1,4 @@
-import { readFile, rm, stat } from "node:fs/promises"
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -7,6 +7,10 @@ import { Left, Right } from "functype/either"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
 
 import { getGraphClient } from "../src/client/graph-client"
 import { deleteContact, exportContacts, updateContact } from "../src/tools/contacts-tools"
@@ -32,8 +36,11 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  vi.useRealTimers()
   await rm(outDir, { recursive: true, force: true })
 })
+
+const filesIn = async (dir: string) => readdir(dir).catch(() => [] as string[])
 
 const readExport = async (message: string) => {
   const path = /Saved: (.+)/.exec(message)?.[1]
@@ -164,6 +171,42 @@ describe("exportContacts", () => {
 
     expect(result.isLeft()).toBe(true)
     expect((result.value as Error).message).toContain("Contacts/Family")
+    expect(await filesIn(outDir)).toEqual([])
+  })
+
+  it("leaves no file behind when the write fails part-way", async () => {
+    vi.mocked(writeFile).mockImplementationOnce(async (path, _data, options) => {
+      const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+      await actual.writeFile(path, '{"exportedAt":', options)
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" })
+    })
+
+    const result = await exportContacts({ out_dir: outDir })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain("no space left on device")
+    expect(await filesIn(outDir)).toEqual([])
+  })
+
+  it("never overwrites an existing export", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-01-02T03:04:05.006Z"))
+    const existing = join(outDir, "contacts-2026-01-02T03-04-05-006Z.json")
+    await mkdir(outDir, { recursive: true })
+    await writeFile(existing, "earlier export")
+
+    const result = await exportContacts({ out_dir: outDir })
+
+    expect(result.isLeft()).toBe(true)
+    expect(await readFile(existing, "utf-8")).toBe("earlier export")
+    expect(await filesIn(outDir)).toEqual(["contacts-2026-01-02T03-04-05-006Z.json"])
+  })
+
+  it("leaves only the finished export in the directory", async () => {
+    const result = await exportContacts({ out_dir: outDir })
+
+    const path = /Saved: (.+)/.exec(result.value as string)?.[1] as string
+    expect(await filesIn(outDir)).toEqual([path.slice(outDir.length + 1)])
   })
 })
 
