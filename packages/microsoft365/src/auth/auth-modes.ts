@@ -1,7 +1,7 @@
 import type {
   AccessToken as AzureAccessToken,
+  DeviceCodeCredentialOptions,
   GetTokenOptions,
-  TokenCachePersistenceOptions,
   TokenCredential,
 } from "@azure/identity"
 import {
@@ -74,29 +74,36 @@ export const createCredential = (config: AuthConfig): Either<AuthError, TokenCre
   }
 }
 
+type PersistenceOptions = Pick<
+  DeviceCodeCredentialOptions,
+  "tokenCachePersistenceOptions" | "authenticationRecord" | "disableAutomaticAuthentication"
+>
+
+// Opt out of the browser entirely: headless hosts, SSH sessions, or a machine whose
+// default browser cannot be launched on demand.
 const createDeviceCodeCredential = (
   tenantId: string | undefined,
   clientId: string,
-  tokenCachePersistenceOptions: TokenCachePersistenceOptions | undefined,
-): TokenCredential =>
+  persistence: PersistenceOptions = {},
+): DeviceCodeCredential =>
   new DeviceCodeCredential({
     tenantId,
     clientId,
-    tokenCachePersistenceOptions,
+    ...persistence,
     userPromptCallback: (info) => {
       console.error(`\nAuthentication Required:`)
       console.error(`Please visit: ${info.verificationUri}`)
       console.error(`And enter code: ${info.userCode}\n`)
     },
-  }) as TokenCredential
+  })
 
 // Persisting the cache is not enough on its own: the credential only consults it once it
-// knows which account to look for, and that comes from an AuthenticationRecord. So the
-// browser credential is driven through its documented two-step flow instead of letting it
-// sign in implicitly:
+// knows which account to look for, and that comes from an AuthenticationRecord. So both
+// the browser and device-code credentials are driven through their documented two-step
+// flow instead of letting them sign in implicitly:
 //
 // - Constructed with disableAutomaticAuthentication, getToken tries the cache silently
-//   and throws AuthenticationRequiredError rather than opening a browser when it cannot.
+//   and throws AuthenticationRequiredError rather than prompting when it cannot.
 // - authenticate() then signs in interactively and returns the AuthenticationRecord,
 //   which is persisted so the next start can go straight to the cache.
 //
@@ -104,20 +111,23 @@ const createDeviceCodeCredential = (
 // record, a scope change or an expired refresh token all look the same: "it asked me to
 // sign in again". Identity replaces the underlying reason with a generic message when it
 // throws, and only writes the original to its own logger, hence the AZURE_LOG_LEVEL hint.
-const signInWhenRequired = (browser: InteractiveBrowserCredential, hadRecord: boolean): TokenCredential => {
+const signInWhenRequired = (
+  credential: InteractiveBrowserCredential | DeviceCodeCredential,
+  hadRecord: boolean,
+): TokenCredential => {
   // Parallel Graph calls can all miss the cache at once; they share one sign-in rather
-  // than each opening a browser window.
+  // than each prompting separately.
   const pending = Ref<Promise<void> | undefined>(undefined)
 
   const signIn = async (scopes: string | string[], options: GetTokenOptions | undefined): Promise<void> => {
-    const record = await browser.authenticate(scopes, options)
+    const record = await credential.authenticate(scopes, options)
     if (record) writeAuthenticationRecord(record)
   }
 
   return {
     getToken: async (scopes, options) => {
       try {
-        return await browser.getToken(scopes, options)
+        return await credential.getToken(scopes, options)
       } catch (error) {
         if (!(error instanceof AuthenticationRequiredError)) throw error
         if (hadRecord) {
@@ -129,7 +139,7 @@ const signInWhenRequired = (browser: InteractiveBrowserCredential, hadRecord: bo
         const inFlight = pending.get() ?? signIn(scopes, options).finally(() => pending.set(undefined))
         pending.set(inFlight)
         await inFlight
-        return browser.getToken(scopes, options)
+        return credential.getToken(scopes, options)
       }
     },
   }
@@ -144,41 +154,36 @@ const createInteractiveCredential = (
     return Left<AuthError, TokenCredential>({ type: "config", message: "Interactive mode requires MS365_CLIENT_ID" })
   }
 
-  // Both flows below share this: whichever one is used, the resulting token survives
-  // a restart, which is the entire point of the interactive mode being usable at all.
-  const tokenCachePersistenceOptions = enableTokenCachePersistence()
-    ? { enabled: true, name: TOKEN_CACHE_NAME }
-    : undefined
+  const redirectUri = config.redirectUri ?? DEFAULT_REDIRECT_URI
 
-  // Opt out of the browser entirely: headless hosts, SSH sessions, or a machine whose
-  // default browser cannot be launched on demand.
+  if (!enableTokenCachePersistence()) {
+    return config.useDeviceCode
+      ? tryCredential(() => createDeviceCodeCredential(tenantId, clientId), "device code")
+      : tryCredential(() => new InteractiveBrowserCredential({ tenantId, clientId, redirectUri }), "interactive")
+  }
+
+  // Both flows share this: whichever one is used, the resulting token survives a
+  // restart, which is the entire point of the interactive mode being usable at all.
+  const authenticationRecord = readAuthenticationRecord()
+  const persistence: PersistenceOptions = {
+    tokenCachePersistenceOptions: { enabled: true, name: TOKEN_CACHE_NAME },
+    authenticationRecord,
+    disableAutomaticAuthentication: true,
+  }
+  const hadRecord = authenticationRecord !== undefined
+
   if (config.useDeviceCode) {
     return tryCredential(
-      () => createDeviceCodeCredential(tenantId, clientId, tokenCachePersistenceOptions),
+      () => signInWhenRequired(createDeviceCodeCredential(tenantId, clientId, persistence), hadRecord),
       "device code",
     )
   }
 
-  const redirectUri = config.redirectUri ?? DEFAULT_REDIRECT_URI
-
-  if (!tokenCachePersistenceOptions) {
-    return tryCredential(() => new InteractiveBrowserCredential({ tenantId, clientId, redirectUri }), "interactive")
-  }
-
-  const authenticationRecord = readAuthenticationRecord()
-
   return tryCredential(
     () =>
       signInWhenRequired(
-        new InteractiveBrowserCredential({
-          tenantId,
-          clientId,
-          redirectUri,
-          tokenCachePersistenceOptions,
-          authenticationRecord,
-          disableAutomaticAuthentication: true,
-        }),
-        authenticationRecord !== undefined,
+        new InteractiveBrowserCredential({ tenantId, clientId, redirectUri, ...persistence }),
+        hadRecord,
       ),
     "interactive",
   )

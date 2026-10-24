@@ -51,6 +51,7 @@ describe("interactive authentication mode", () => {
   })
 
   it("uses one device-code credential for repeated token requests when explicitly enabled", async () => {
+    vi.stubEnv("MS365_TOKEN_CACHE", "false")
     const deviceToken = vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockResolvedValue(token)
     const browserToken = vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
     const result = createCredential({ ...config, useDeviceCode: true })
@@ -148,6 +149,48 @@ describe("interactive authentication mode", () => {
 
       await expect((createCredential(config).value as TokenCredential).getToken("scope")).rejects.toBe(error)
       expect(authenticate).not.toHaveBeenCalled()
+    })
+
+    // Without the record, the device-code credential has no account to look up in the
+    // cache, so a persisted refresh token would never be used.
+    describe("with device code", () => {
+      const deviceConfig = { ...config, useDeviceCode: true }
+
+      it("signs in through authenticate() and persists the record it returns", async () => {
+        const getToken = vi
+          .spyOn(DeviceCodeCredential.prototype, "getToken")
+          .mockRejectedValueOnce(required())
+          .mockResolvedValue(token)
+        const authenticate = vi.spyOn(DeviceCodeCredential.prototype, "authenticate").mockResolvedValue(record)
+        const browserToken = vi.spyOn(InteractiveBrowserCredential.prototype, "getToken")
+        const credential = createCredential(deviceConfig).value as TokenCredential
+
+        await expect(credential.getToken("scope")).resolves.toBe(token)
+
+        expect(authenticate).toHaveBeenCalledOnce()
+        expect(getToken).toHaveBeenCalledTimes(2)
+        expect(browserToken).not.toHaveBeenCalled()
+        expect(readAuthenticationRecord(cacheDir.path)).toEqual(record)
+      })
+
+      it("does not prompt when the cache serves the token", async () => {
+        vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockResolvedValue(token)
+        const authenticate = vi.spyOn(DeviceCodeCredential.prototype, "authenticate")
+        const credential = createCredential(deviceConfig).value as TokenCredential
+
+        await expect(credential.getToken("scope")).resolves.toBe(token)
+        expect(authenticate).not.toHaveBeenCalled()
+      })
+
+      it("picks up the record saved by an earlier start", async () => {
+        writeAuthenticationRecord(record, cacheDir.path)
+        const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+        vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockRejectedValueOnce(required()).mockResolvedValue(token)
+        vi.spyOn(DeviceCodeCredential.prototype, "authenticate").mockResolvedValue(record)
+
+        await (createCredential(deviceConfig).value as TokenCredential).getToken("scope")
+        expect(log).toHaveBeenCalledWith(expect.stringContaining("Cached credentials could not be reused"))
+      })
     })
 
     it("ignores a stored record missing its account fields", () => {
