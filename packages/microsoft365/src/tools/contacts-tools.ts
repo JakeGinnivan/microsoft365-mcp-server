@@ -197,8 +197,18 @@ const EXPORT_FIELDS = [
 // 50 pages without saying so: at the default page size that is 500 contacts, silently
 // truncated; at 999 it is ~50,000.
 const PAGE_SIZE = 999
+// Mirrors MAX_PAGES in core's fetchAllPages, which returns what it has when it hits the cap
+// with no sign it stopped early. A folder that fills every page is reported as possibly
+// truncated; it may also hold exactly that many contacts, which can't be told apart here.
+const MAX_PAGES = 50
+const PAGINATION_CAP = PAGE_SIZE * MAX_PAGES
 
-type FolderExport = { readonly id: string | null; readonly path: string; readonly count: number }
+type FolderExport = {
+  readonly id: string | null
+  readonly path: string
+  readonly count: number
+  readonly truncated?: true
+}
 
 export const exportContacts = async (params: { out_dir?: string }): Promise<Either<UserError, string>> => {
   const client = requireClient()
@@ -270,7 +280,15 @@ export const exportContacts = async (params: { out_dir?: string }): Promise<Eith
       const { contacts, summary } = acc.value as Exported
       return Right({
         contacts: [...contacts, ...items.map((c) => ({ ...c, folderPath: source.path }))],
-        summary: [...summary, { id: source.id, path: source.path, count: items.length }],
+        summary: [
+          ...summary,
+          {
+            id: source.id,
+            path: source.path,
+            count: items.length,
+            ...(items.length >= PAGINATION_CAP ? { truncated: true as const } : {}),
+          },
+        ],
       })
     },
     Promise.resolve(Right<UserError, Exported>({ contacts: [], summary: [] })),
@@ -293,6 +311,14 @@ export const exportContacts = async (params: { out_dir?: string }): Promise<Eith
     return Left(new UserError(`Failed to write ${target}: ${err instanceof Error ? err.message : String(err)}`))
   }
 
-  const folderLines = summary.map((f) => `  ${f.path}: ${f.count}`).join("\n")
-  return Right(`Saved: ${target}\nContacts: ${contacts.length}\nFolders:\n${folderLines}`)
+  const folderLines = summary
+    .map((f) => `  ${f.path}: ${f.count}${f.truncated ? " (may be incomplete: hit the paging limit)" : ""}`)
+    .join("\n")
+  const truncatedPaths = summary.filter((f) => f.truncated).map((f) => f.path)
+  const warning =
+    truncatedPaths.length > 0
+      ? `\n\nWARNING: stopped at the ${PAGINATION_CAP}-contact paging limit in ${truncatedPaths.join(", ")}. ` +
+        "The export may be missing contacts from those folders."
+      : ""
+  return Right(`Saved: ${target}\nContacts: ${contacts.length}\nFolders:\n${folderLines}${warning}`)
 }

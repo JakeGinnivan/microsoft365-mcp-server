@@ -80,6 +80,36 @@ describe("exportContacts", () => {
     }
   })
 
+  // requestPaginated returns what it has at its 50-page cap with no error, so a folder that
+  // fills every page has to be flagged here or the export looks complete.
+  it("flags a folder that hit the paging limit", async () => {
+    const full = Array.from({ length: 999 * 50 }, (_, i) => ({ id: `D${i}` }))
+    mockClient.requestPaginated.mockImplementation(async (path: string) =>
+      Right(path === "/me/contacts" ? full : (pages[path] ?? [])),
+    )
+
+    const result = await exportContacts({ out_dir: outDir })
+
+    expect(result.isRight()).toBe(true)
+    expect(result.value).toContain("  Contacts: 49950 (may be incomplete: hit the paging limit)")
+    expect(result.value).toContain("WARNING: stopped at the 49950-contact paging limit in Contacts.")
+    const exported = (await readExport(result.value as string)) as unknown as {
+      folders: ReadonlyArray<{ path: string; truncated?: boolean }>
+    }
+    expect(exported.folders.map((f) => [f.path, f.truncated])).toEqual([
+      ["Contacts", true],
+      ["Contacts/Family", undefined],
+      ["Contacts/Family/Cousins", undefined],
+    ])
+  })
+
+  it("does not warn when no folder hit the paging limit", async () => {
+    const result = await exportContacts({ out_dir: outDir })
+
+    expect(result.value).not.toContain("WARNING")
+    expect(result.value).not.toContain("may be incomplete")
+  })
+
   it("exports a folder reached twice only once", async () => {
     mockClient.requestPaginated.mockImplementation(async (path: string) =>
       Right(
