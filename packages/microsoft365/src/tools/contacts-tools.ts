@@ -212,9 +212,13 @@ export const exportContacts = async (params: { out_dir?: string }): Promise<Eith
 
   // Sequential on purpose: folders are few, and a failure part-way must stop the export
   // rather than leave a partial one that looks complete.
+  // Graph's contact-folder listings are not documented as strictly one level deep, so a
+  // folder already reached is skipped rather than trusting the hierarchy: a folder listed
+  // twice is exported once, and a folder that lists an ancestor cannot recurse forever.
   const walkFolders = async (
     parentPath: string,
     listPath: string,
+    visited: Set<string>,
   ): Promise<Either<UserError, ReadonlyArray<FoundFolder>>> => {
     const listed = await client.requestPaginated<GraphContactFolder>(listPath, { odataParams: { $top: 100 } })
     if (listed.isLeft()) {
@@ -225,27 +229,22 @@ export const exportContacts = async (params: { out_dir?: string }): Promise<Eith
     >(
       async (accPromise, folder) => {
         const acc = await accPromise
-        if (acc.isLeft()) return acc
+        if (acc.isLeft() || visited.has(folder.id)) return acc
+        visited.add(folder.id)
         const path = `${parentPath}/${folder.displayName ?? folder.id}`
-        const children = await walkFolders(path, `/me/contactFolders/${folder.id}/childFolders`)
+        const children = await walkFolders(path, `/me/contactFolders/${folder.id}/childFolders`, visited)
         return children.map((found) => [...(acc.value as ReadonlyArray<FoundFolder>), { folder, path }, ...found])
       },
       Promise.resolve(Right<UserError, ReadonlyArray<FoundFolder>>([])),
     )
   }
 
-  const folders = await walkFolders("Contacts", "/me/contactFolders")
+  const folders = await walkFolders("Contacts", "/me/contactFolders", new Set())
   if (folders.isLeft()) return Left(folders.value as UserError)
-
-  // Graph's contact-folder listings are not documented as strictly one level deep, so a
-  // folder reached twice is exported once rather than trusting the hierarchy.
-  const uniqueFolders = (folders.value as ReadonlyArray<FoundFolder>).filter(
-    (entry, index, all) => all.findIndex((other) => other.folder.id === entry.folder.id) === index,
-  )
 
   const sources = [
     { id: null, path: "Contacts", listPath: "/me/contacts" },
-    ...uniqueFolders.map(({ folder, path }) => ({
+    ...(folders.value as ReadonlyArray<FoundFolder>).map(({ folder, path }) => ({
       id: folder.id,
       path,
       listPath: `/me/contactFolders/${folder.id}/contacts`,

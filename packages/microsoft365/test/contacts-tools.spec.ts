@@ -98,6 +98,31 @@ describe("exportContacts", () => {
     expect(exported.contacts.filter((c) => c.id === "C3")).toHaveLength(1)
   })
 
+  it("stops at a folder cycle instead of recursing forever", async () => {
+    mockClient.requestPaginated.mockImplementation(async (path: string) =>
+      Right(
+        path === "/me/contactFolders/F2/childFolders" ? [{ id: "F1", displayName: "Family" }] : (pages[path] ?? []),
+      ),
+    )
+
+    const result = await exportContacts({ out_dir: outDir })
+
+    expect(result.isRight()).toBe(true)
+    const exported = await readExport(result.value as string)
+    expect(exported.contacts.map((c) => [c.id, c.folderPath])).toEqual([
+      ["C1", "Contacts"],
+      ["C2", "Contacts/Family"],
+      ["C3", "Contacts/Family/Cousins"],
+    ])
+    const childFolderCalls = mockClient.requestPaginated.mock.calls.filter(([path]) =>
+      String(path).endsWith("/childFolders"),
+    )
+    expect(childFolderCalls.map(([path]) => path)).toEqual([
+      "/me/contactFolders/F1/childFolders",
+      "/me/contactFolders/F2/childFolders",
+    ])
+  })
+
   it("fails rather than writing a partial export when a folder cannot be read", async () => {
     mockClient.requestPaginated.mockImplementation(async (path: string) =>
       path === "/me/contactFolders/F1/contacts"
