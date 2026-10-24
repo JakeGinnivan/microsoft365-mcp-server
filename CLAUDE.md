@@ -92,9 +92,23 @@ pnpm test -- test/specific.spec.ts          # Run specific file
 
 ## Publishing
 
+Bump `packages/microsoft365/package.json`, re-sync `server.json`, then commit and tag:
+
 ```bash
-npm version patch|minor|major
-npm publish --access public
+cd packages/microsoft365
+npm version patch|minor|major --no-git-tag-version
+pnpm sync:server-json
+cd ../..
+git commit -am "chore(release): microsoft365-mcp-server v<new>"
+git tag v<new> && git push --follow-tags
 ```
 
-The `prepublishOnly` hook automatically runs `pnpm validate` before publishing.
+`npm version` cannot commit or tag from here — `packages/microsoft365` is not a git
+root, so npm does not see a repository and skips both. That is why the bump is split
+from the commit, and why `sync:server-json` is a step rather than a `version` lifecycle
+hook: the hook would never fire.
+
+The tag drives two workflows: `publish.yml` publishes to npm, and `publish-registry.yml`
+publishes `server.json` to the MCP Registry. The `prepublishOnly` hook runs `pnpm validate`
+and `pnpm check:server-json` before npm accepts the package, and CI runs the same
+`check:server-json` on every PR so drift fails there instead of on the tag.
