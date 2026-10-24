@@ -100,8 +100,13 @@ npm version patch|minor|major --no-git-tag-version
 pnpm sync:server-json
 cd ../..
 git commit -am "chore(release): microsoft365-mcp-server v<new>"
-git tag v<new> && git push --follow-tags
+git tag v<new>
+git push origin main v<new>
 ```
+
+Push the tag by name. `--follow-tags` pushes annotated tags only, and the tags here
+are lightweight, so it would move `main` and silently leave the tag behind — no npm
+publish, no registry publish, and no error to tell you.
 
 `npm version` cannot commit or tag from here — `packages/microsoft365` is not a git
 root, so npm does not see a repository and skips both. That is why the bump is split

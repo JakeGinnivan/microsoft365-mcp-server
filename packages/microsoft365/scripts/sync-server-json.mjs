@@ -12,8 +12,10 @@
 //   node scripts/sync-server-json.mjs           write server.json
 //   node scripts/sync-server-json.mjs --check   fail if it is stale
 //
-// Runs automatically via the npm `version` lifecycle, and --check runs in
-// prepublishOnly so a hand-edit cannot reach npm or the registry.
+// There is deliberately no `version` lifecycle hook: `npm version` does not see a
+// repository from packages/microsoft365, which is not a git root, so the hook would
+// never fire. `pnpm sync:server-json` is a documented release step instead, and
+// --check runs in CI, in prepublishOnly, and again before the registry publish.
 
 import { readFile, writeFile } from "node:fs/promises"
 

@@ -25,7 +25,7 @@
         },
         {
           "name": "MS365_TENANT_ID",
-          "description": "Azure AD tenant ID, or 'common'/'organizations'/'consumers'. Needed by certificate and client-secret modes.",
+          "description": "Azure AD tenant ID, or 'common'/'organizations'/'consumers'. Read by certificate, client-secret and oauth-proxy modes.",
           "isRequired": false,
           "format": "string",
           "isSecret": false
