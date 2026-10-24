@@ -156,6 +156,7 @@ export type GraphContact = {
   readonly homePhones?: ReadonlyArray<string>
   readonly categories?: ReadonlyArray<string>
   readonly personalNotes?: string
+  readonly birthday?: string
 }
 
 export type GraphContactFolder = {

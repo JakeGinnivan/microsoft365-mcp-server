@@ -144,6 +144,31 @@ describe("updateContact", () => {
     })
   })
 
+  it("sends a birthday given as a date", async () => {
+    await updateContact({ contact_id: "C1", birthday: "1974-07-22" })
+
+    expect(mockClient.updateContact).toHaveBeenCalledWith("C1", { birthday: "1974-07-22" })
+  })
+
+  // Merging a duplicate means copying its birthday exactly as Graph returned it; trimming the
+  // timestamp to a date first could move it a day.
+  it("passes a birthday timestamp through unchanged", async () => {
+    await updateContact({ contact_id: "C1", birthday: "1974-07-22T11:59:00Z" })
+
+    expect(mockClient.updateContact).toHaveBeenCalledWith("C1", { birthday: "1974-07-22T11:59:00Z" })
+  })
+
+  it.each(["22/07/1974", "1974-02-30", "1974-13-01", "1974-07-22T25:00:00Z", "1974-07-22T11:59:00", "soon"])(
+    "refuses the invalid birthday %s without calling Graph",
+    async (birthday) => {
+      const result = await updateContact({ contact_id: "C1", birthday })
+
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("Invalid birthday")
+      expect(mockClient.updateContact).not.toHaveBeenCalled()
+    },
+  )
+
   it("refuses an update with no fields", async () => {
     const result = await updateContact({ contact_id: "C1" })
 
@@ -164,6 +189,18 @@ describe("deleteContact", () => {
     expect(mockClient.deleteContact).toHaveBeenCalledWith("C1")
     expect(result.value).toContain("Dup Person")
     expect(result.value).toContain("dup@example.com")
+  })
+
+  // delete_contact tells the caller to carry the birthday over, so it must be in what comes back.
+  it("includes the deleted contact's birthday", async () => {
+    mockClient.getContact.mockResolvedValue(
+      Right({ id: "C1", displayName: "Dup Person", birthday: "1974-07-22T11:59:00Z" }),
+    )
+    mockClient.deleteContact.mockResolvedValue(Right({}))
+
+    const result = await deleteContact({ contact_id: "C1" })
+
+    expect(result.value).toContain("Birthday: 1974-07-22T11:59:00Z")
   })
 
   it("does not delete when the contact cannot be read", async () => {

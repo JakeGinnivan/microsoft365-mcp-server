@@ -830,6 +830,12 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       home_phones: z.array(z.string()).optional().describe("Complete replacement list of home phones"),
       categories: z.array(z.string()).optional().describe("Complete replacement list of Outlook categories"),
       personal_notes: z.string().optional().describe("Replaces the contact's notes"),
+      birthday: z
+        .string()
+        .optional()
+        .describe(
+          "Birthday as YYYY-MM-DD, or an ISO 8601 timestamp (e.g. copied from another contact's birthday as-is)",
+        ),
     }),
     execute: async (params) => unwrapResult(await updateContact(params)),
     domain: "contacts",

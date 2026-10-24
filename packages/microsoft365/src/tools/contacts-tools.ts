@@ -71,6 +71,19 @@ export const createContact = async (params: {
     .map((c) => `Contact created.\n\n${formatContactDetail(c)}`)
 }
 
+const BIRTHDAY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/
+
+// Accepts a timestamp as well as a bare date so a birthday read off another contact can be
+// copied verbatim: re-deriving the date from a UTC timestamp can shift it by a day.
+// The component check catches dates Date would silently roll over, like 2023-02-30.
+const isValidBirthday = (value: string): boolean => {
+  const match = BIRTHDAY_PATTERN.exec(value)
+  if (!match || Number.isNaN(Date.parse(value))) return false
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
 // Graph replaces a multi-valued property wholesale on PATCH — there is no append — so
 // list parameters are complete replacements, and an empty list clears the property.
 export const updateContact = async (params: {
@@ -86,9 +99,18 @@ export const updateContact = async (params: {
   home_phones?: ReadonlyArray<string>
   categories?: ReadonlyArray<string>
   personal_notes?: string
+  birthday?: string
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  if (params.birthday !== undefined && !isValidBirthday(params.birthday)) {
+    return Left(
+      new UserError(
+        `Invalid birthday "${params.birthday}". Use a date (YYYY-MM-DD) or an ISO 8601 timestamp with a UTC offset.`,
+      ),
+    )
+  }
 
   const updates: Record<string, unknown> = {}
   if (params.given_name !== undefined) updates.givenName = params.given_name
@@ -104,6 +126,7 @@ export const updateContact = async (params: {
   if (params.home_phones !== undefined) updates.homePhones = params.home_phones
   if (params.categories !== undefined) updates.categories = params.categories
   if (params.personal_notes !== undefined) updates.personalNotes = params.personal_notes
+  if (params.birthday !== undefined) updates.birthday = params.birthday
 
   if (Object.keys(updates).length === 0) return Left(new UserError("No fields to update."))
 

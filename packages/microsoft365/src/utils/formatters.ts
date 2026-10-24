@@ -354,6 +354,7 @@ export const formatContactDetail = (contact: GraphContact): string => {
 - Company: ${contact.companyName ?? ""}
 - Job Title: ${contact.jobTitle ?? ""}
 - Categories: ${(contact.categories ?? []).join(", ")}
+- Birthday: ${contact.birthday ?? ""}
 
 ## Email Addresses
 ${emails}
