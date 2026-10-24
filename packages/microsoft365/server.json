@@ -1,0 +1,113 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sapientsai/microsoft365-mcp-server",
+  "description": "Microsoft 365 via Graph — mail, calendar, contacts, files, Teams, Planner, OneNote, To Do.",
+  "repository": {
+    "url": "https://github.com/sapientsai/microsoft365-mcp-server",
+    "source": "github"
+  },
+  "version": "1.2.16",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "microsoft365-mcp-server",
+      "version": "1.2.16",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MS365_CLIENT_ID",
+          "description": "Azure AD application (client) ID. Every mode except client-token needs it.",
+          "isRequired": true,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_TENANT_ID",
+          "description": "Azure AD tenant ID, or 'common'/'organizations'/'consumers'. Read by certificate, client-secret and oauth-proxy modes.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_CLIENT_SECRET",
+          "description": "Azure AD client secret (client-secret mode).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "MS365_CERT_PATH",
+          "description": "Path to the certificate used by certificate mode.",
+          "isRequired": false,
+          "format": "filepath",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_CERT_PASSWORD",
+          "description": "Password for the certificate at MS365_CERT_PATH, if it has one.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "MS365_ACCESS_TOKEN",
+          "description": "A Graph access token supplied directly (client-token mode).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "MS365_AUTH_MODE",
+          "description": "Auth mode: interactive (default), certificate, client-secret, client-token or oauth-proxy.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_OAUTH_BASE_URL",
+          "description": "Base URL of the OAuth proxy (oauth-proxy mode).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_READ_ONLY",
+          "description": "Set to 'true' to expose read-only tools and refuse every write.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_ENABLED_TOOLS",
+          "description": "Case-insensitive regular expression matched against tool names; only matching tools are registered. Not a comma-separated list.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_PRESETS",
+          "description": "Comma-separated tool presets to enable instead of naming tools individually.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "MS365_ORG_MODE",
+          "description": "Set to 'true' for organisation-wide (application-permission) behaviour.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "TRANSPORT_TYPE",
+          "description": "Transport: 'stdio' (the default, and what this npm package is listed as) or 'httpStream' for remote/Docker deployments.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
