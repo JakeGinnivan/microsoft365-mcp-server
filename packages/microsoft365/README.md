@@ -201,8 +201,14 @@ work across a household or a team: your own mail by default, someone else's when
 MS365_ALLOWED_MAILBOXES="bel@example.com,household@example.com"
 ```
 
-Nothing is reachable until it is listed. Omitting `mailbox` always means your own
-mailbox, so existing setups need no configuration and behave exactly as before.
+Nothing else is reachable until it is listed, in every auth mode, delegated included.
+Omitting `mailbox` means your own mailbox, so existing setups need no configuration and
+behave exactly as before. Naming your own address (primary, UPN or an alias) also works
+without listing it and is treated the same as omitting it. This applies whenever you sign
+in as yourself (interactive, device code, client token, OAuth proxy), not app-only, where
+there is no own mailbox. Your addresses are looked up from `/me` with the token of the
+request itself and cached per token, so in OAuth proxy mode each user only ever matches
+their own.
 
 Two boundaries apply, and both matter:
 
@@ -214,6 +220,9 @@ Two boundaries apply, and both matter:
 The env var is configuration, not security: it lets a single app registration serve
 several agents with different reach — a triage bot limited to one mailbox, an assistant
 given two — without minting a registration per agent. It cannot widen what Azure allows.
+It still applies when signed in as yourself: you may have Exchange access to mailboxes (a
+partner's, say) that you do not want this particular server or agent to touch. The list
+scopes the agent; it does not authorise anything.
 
 **Which permission you need depends on how the server authenticates:**
 

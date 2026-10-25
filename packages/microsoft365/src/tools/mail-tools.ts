@@ -6,7 +6,7 @@ import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
-import { type MailboxScope, OWN_MAILBOX, resolveMailboxScope } from "../mail/mailbox"
+import { type MailboxScope, OWN_MAILBOX, resolveMailbox } from "../mail/mailbox"
 import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
 import {
   formatAttachmentList,
@@ -37,12 +37,13 @@ const requireClient = () => {
 // can fail with a UserError, and neither is worth repeating twenty times.
 type ScopedClient = { scope: MailboxScope; client: NonNullable<ReturnType<typeof requireClient>> }
 
-const withScope = (mailbox: string | undefined): Either<UserError, ScopedClient> => {
-  const scope = resolveMailboxScope(mailbox)
-  if (scope.isLeft()) return Left(scope.value as UserError)
-
+// Async because naming your own address is checked against your identity in Graph.
+const withScope = async (mailbox: string | undefined): Promise<Either<UserError, ScopedClient>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  const scope = await resolveMailbox(mailbox, client)
+  if (scope.isLeft()) return Left(scope.value as UserError)
 
   return Right({ scope: scope.orThrow(), client })
 }
@@ -73,7 +74,7 @@ export const listMessages = async (params: {
   fetch_all_pages?: boolean
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -115,7 +116,7 @@ export const getMessage = async (params: {
   body_format?: "text" | "html"
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -130,7 +131,7 @@ export const listMailFolders = async (params?: {
   fetch_all_pages?: boolean
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params?.mailbox)
+  const resolvedScope = await withScope(params?.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -215,7 +216,7 @@ export const moveMessage = async (params: {
   destination: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -249,7 +250,7 @@ export const listAttachments = async (params: {
   message_id: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -285,7 +286,7 @@ export const batchMoveMessages = async (params: {
   destination: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -363,7 +364,7 @@ export const sendMessage = async (params: {
   content_type?: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -390,7 +391,7 @@ export const sendReply = async (params: {
   comment: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -405,7 +406,7 @@ export const sendReplyAll = async (params: {
   comment: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -421,7 +422,7 @@ export const sendForward = async (params: {
   comment?: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -439,7 +440,7 @@ export const createReplyDraft = async (params: {
   comment: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -457,7 +458,7 @@ export const createReplyAllDraft = async (params: {
   comment: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -476,7 +477,7 @@ export const createForwardDraft = async (params: {
   comment?: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -513,7 +514,7 @@ export const createDraft = async (params: {
   bcc?: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -542,7 +543,7 @@ export const sendDraft = async (params: {
   message_id: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -612,7 +613,7 @@ export const updateDraft = async (params: {
   bcc?: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -634,7 +635,7 @@ export const deleteDraft = async (params: {
   message_id: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -713,7 +714,7 @@ export const searchMessages = async (params: {
   top?: number
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 
@@ -751,7 +752,7 @@ export const scanMessages = async (params: {
   cursor?: string
   mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const resolvedScope = withScope(params.mailbox)
+  const resolvedScope = await withScope(params.mailbox)
   if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
   const { scope, client } = resolvedScope.orThrow()
 

@@ -16,13 +16,21 @@
 //                  without minting a registration per agent.
 //
 // The env var is configuration, not security: it fails closed and gives a clear error
-// instead of a Graph 403, but it is Azure that actually enforces access.
+// instead of a Graph 403, but it is Azure that actually enforces access. It applies in
+// delegated modes too: a user can often open mailboxes in Exchange (a partner's, say) that
+// they do not want a given agent to touch, so the list scopes the agent, not the user.
+//
+// The signed-in user's own address needs no listing: it is the same mailbox as /me, and
+// routes there, so a ref or cursor from it matches one issued with mailbox omitted.
+
+import { createHash } from "node:crypto"
 
 import { UserError } from "fastmcp"
 import { type Either, Left, Right } from "functype/either"
 
-import { getAuthMode } from "../auth/auth-manager"
-import type { AuthMode } from "../types"
+import { getAccessToken, getAuthMode } from "../auth/auth-manager"
+import { getContextToken } from "../auth/token-context"
+import type { AuthMode, GraphUser, ODataParams } from "../types"
 
 /** Graph path prefix for a mailbox: "/me" for the signed-in user, else "/users/{address}". */
 export type MailboxScope = {
@@ -68,6 +76,107 @@ const requiresMailbox = () =>
       "Pass mailbox with the address of the mailbox to act on.",
   )
 
+const NO_ADDRESSES: ReadonlySet<string> = new Set()
+
+// Every SMTP address that reaches the signed-in user's mailbox: the primary mail, the UPN,
+// and each alias. proxyAddresses mixes types (SMTP:, smtp:, SIP:, X500:); only SMTP ones are
+// addresses a caller could pass, and the case of the prefix only marks which is primary.
+export const ownAddressesOf = (user: Pick<GraphUser, "mail" | "userPrincipalName" | "proxyAddresses">) =>
+  new Set(
+    [
+      user.mail,
+      user.userPrincipalName,
+      ...(user.proxyAddresses ?? []).filter((entry) => /^smtp:/i.test(entry)).map((entry) => entry.slice(5)),
+    ]
+      .filter((address): address is string => typeof address === "string")
+      .map(normalize)
+      .filter((address) => address.length > 0),
+  ) as ReadonlySet<string>
+
+// Modes whose credential is one user's for the life of the process. oauth-proxy is handled
+// separately below, by the per-request token; app-only modes have no own mailbox.
+const OWN_ADDRESS_MODES: ReadonlySet<AuthMode> = new Set(["interactive", "client-token"])
+
+type IdentityClient = {
+  readonly request: <T>(
+    method: string,
+    path: string,
+    options?: { odataParams?: ODataParams },
+  ) => Promise<Either<unknown, T>>
+}
+
+// Keyed by a hash of the token the request actually uses, never by process or session alone.
+// In oauth-proxy each request carries its own user's token, so one user's addresses can only
+// be found again under that user's token. Outside the proxy, set_access_token can swap a
+// client-token deployment to another user, and the old answer must not survive it either.
+// Bounded so a long-running proxy does not keep one entry per token it has ever seen; a Map
+// iterates in insertion order, so the first key is the oldest.
+export const OWN_ADDRESS_CACHE_LIMIT = 256
+const ownAddressCache = new Map<string, ReadonlySet<string>>()
+
+export const clearOwnAddressCache = (): void => ownAddressCache.clear()
+
+const remember = (key: string, addresses: ReadonlySet<string>): void => {
+  if (ownAddressCache.size >= OWN_ADDRESS_CACHE_LIMIT) {
+    const oldest = ownAddressCache.keys().next()
+    if (!oldest.done) ownAddressCache.delete(oldest.value)
+  }
+  ownAddressCache.set(key, addresses)
+}
+
+// The token the /me lookup below will be sent with. The Graph client's AuthStrategy is
+// getAccessToken, which returns the per-request context token first, so in oauth-proxy both
+// this and the lookup use the caller's own token.
+const requestToken = async (): Promise<string | undefined> => {
+  const contextToken = getContextToken()
+  if (contextToken) return contextToken
+  const eligible = getAuthMode().fold(
+    () => false,
+    (mode) => OWN_ADDRESS_MODES.has(mode),
+  )
+  if (!eligible) return undefined
+  const token = await getAccessToken()
+  return token.fold(
+    (): string | undefined => undefined,
+    (value) => value,
+  )
+}
+
+/**
+ * The signed-in user's own addresses, or none when they cannot be known safely. Every failure
+ * returns none, which leaves the caller to the allowlist: the shortcut can only widen access
+ * when the lookup positively says the address is the caller's own.
+ */
+export const lookupOwnAddresses = async (client: IdentityClient): Promise<ReadonlySet<string>> => {
+  const token = await requestToken()
+  if (token === undefined) return NO_ADDRESSES
+  const key = createHash("sha256").update(token).digest("hex")
+  const cached = ownAddressCache.get(key)
+  if (cached) return cached
+
+  const me = await client.request<GraphUser>("GET", "/me", {
+    odataParams: { $select: ["mail", "userPrincipalName", "proxyAddresses"] },
+  })
+  if (me.isLeft()) return NO_ADDRESSES
+  const addresses = ownAddressesOf(me.value as GraphUser)
+  remember(key, addresses)
+  return addresses
+}
+
+/**
+ * resolveMailboxScope with the deployment's live settings, looking up the signed-in user's
+ * own addresses only when a mailbox is actually named in a delegated mode.
+ */
+export const resolveMailbox = async (
+  mailbox: string | undefined,
+  client: IdentityClient,
+): Promise<Either<UserError, MailboxScope>> => {
+  const appOnly = isAppOnlyAuth()
+  const named = mailbox !== undefined && normalize(mailbox).length > 0
+  const own = named && !appOnly ? await lookupOwnAddresses(client) : NO_ADDRESSES
+  return resolveMailboxScope(mailbox, resolveAllowedMailboxes(), appOnly, own)
+}
+
 /**
  * Resolve a caller-supplied mailbox into a scope, refusing anything the deployment has
  * not been configured to reach.
@@ -80,6 +189,7 @@ export const resolveMailboxScope = (
   mailbox: string | undefined,
   allowed: ReadonlySet<string> = resolveAllowedMailboxes(),
   appOnly: boolean = isAppOnlyAuth(),
+  ownAddresses: ReadonlySet<string> = NO_ADDRESSES,
 ): Either<UserError, MailboxScope> => {
   if (mailbox === undefined) return appOnly ? Left(requiresMailbox()) : Right(OWN_MAILBOX)
 
@@ -92,6 +202,8 @@ export const resolveMailboxScope = (
         ? requiresMailbox()
         : new UserError("mailbox is empty. Omit mailbox for your own mailbox, or pass an email address."),
     )
+
+  if (!appOnly && ownAddresses.has(normalized)) return Right(OWN_MAILBOX)
 
   if (!allowed.has(normalized)) {
     // The configured addresses are not listed: on a shared deployment, anyone who
