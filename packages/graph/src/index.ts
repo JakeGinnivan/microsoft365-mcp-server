@@ -1,5 +1,5 @@
 import { type AuthStrategy, createGraphRequest, loadEnvFileIfPresent } from "@sapientsai/ms-graph-core"
-import { createServer, type SomaServerInstance } from "somamcp"
+import { createServer, type SomaServerInstance } from "somamcp/node"
 import { z } from "zod"
 
 import { authorizesWithApiKey, presentedApiKey } from "./auth/api-key-gate"
@@ -45,13 +45,12 @@ export const buildServer = (config: ServerRuntimeConfig, auth: AuthStrategy): So
     streamKeepalive: { enabled: true, intervalMs: 20_000 },
     ...(apiKey
       ? {
-          // Shared gate for the httpStream transport AND the protected /upload route.
-          // presentedApiKey hides the http.IncomingMessage (transport) vs Hono Request
-          // (route) shape difference, and accepts the key from the Authorization header
-          // or an ?api_key= query parameter — clients that can only be handed a URL have
-          // no other way to send it. FastMCP signals an HTTP rejection by throwing a
-          // Response; surface a 401 on a bad/missing key. Non-async (returns a Promise) to
-          // satisfy the no-floating-await rule.
+          // Shared gate for the httpStream transport AND the protected /upload route. Both
+          // hand it a web Request. presentedApiKey accepts the key from the Authorization
+          // header or an ?api_key= query parameter — clients that can only be handed a URL
+          // have no other way to send it. On the MCP endpoint somamcp serves a rejected
+          // Response as-is, so a bad or missing key is a 401. Non-async (returns a Promise)
+          // to satisfy the no-floating-await rule.
           authenticate: (request: unknown): Promise<{ apiKey: string }> => {
             if (!authorizesWithApiKey(presentedApiKey(request), apiKey)) {
               return Promise.reject(new Response("Unauthorized", { status: 401 }))
@@ -109,12 +108,18 @@ export const main = async (): Promise<void> => {
   const server = buildServer(config, auth)
 
   if (config.transport === "httpStream") {
+    // somamcp 2 serves httpStream stateless only: every request gets a fresh SDK server, and this
+    // server has no server->client features that a session would carry. MCP_STATELESS=false used
+    // to opt into sessions on FastMCP; say that it no longer does, rather than ignore it silently.
+    if (process.env.MCP_STATELESS?.trim().toLowerCase() === "false") {
+      console.error("[Config][WARN] MCP_STATELESS=false is ignored: somamcp 2 serves httpStream stateless only.")
+    }
     await server.start({
       transportType: "httpStream",
-      httpStream: { port: config.port, host: config.host, endpoint: "/mcp", stateless: config.stateless },
+      httpStream: { port: config.port, host: config.host, endpoint: "/mcp" },
     })
     console.error(
-      `[Server] microsoft-mcp-server v${VERSION}${BUILD} (app-only, ${config.stateless ? "stateless" : "stateful"}) on ${config.host}:${config.port}`,
+      `[Server] microsoft-mcp-server v${VERSION}${BUILD} (app-only, stateless) on ${config.host}:${config.port}`,
     )
   } else {
     await server.start({ transportType: "stdio" })
