@@ -4,6 +4,8 @@ import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
+import { resolveMailbox } from "../mail/mailbox"
+import { mailboxOfUrl } from "../mail/mailbox-path"
 import type { GraphApiVersion } from "../types"
 import { safeDecode } from "../utils/safe-decode"
 import { requireDraftEnabled } from "./tool-registry"
@@ -90,6 +92,26 @@ export const isDirectMailSend = (method: unknown, url: string, body?: unknown): 
   })
 }
 
+/**
+ * Every mailbox address a request reaches: its own URL's, and for a JSON $batch, each
+ * sub-request's. Relative batch URLs resolve against the version root, as Graph resolves them.
+ */
+export const mailboxesReached = (url: string, body?: unknown): ReadonlyArray<string> => {
+  const own = mailboxOfUrl(url)
+  const reached = own === undefined ? [] : [own]
+  if (pathSegments(url).at(-1) !== "$batch") return reached
+
+  const requests = property(body, "requests")
+  if (!Array.isArray(requests)) return reached
+  return [
+    ...reached,
+    ...requests.flatMap((request) => {
+      const inner = property(request, "url")
+      return typeof inner === "string" ? mailboxesReached(inner) : []
+    }),
+  ]
+}
+
 const DRAFT_REQUIRED_MESSAGE =
   "This server requires mail to go through a draft (MS365_REQUIRE_DRAFT), so graph_query can't send it " +
   "directly. Create a draft with create_draft, create_reply_draft, create_reply_all_draft or " +
@@ -131,6 +153,16 @@ export const graphQuery = async (params: {
 
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+
+  // graph_query reaches the same mailboxes the mail tools do, so it applies the same mailbox
+  // check, reads included: keeping an agent out of a mailbox the user can open (a partner's,
+  // say) means keeping it out here too. One refused sub-request refuses the whole batch, and
+  // all of it is decided before anything is sent.
+  const refusals = await Promise.all(
+    [...new Set(mailboxesReached(url, body))].map((mailbox) => resolveMailbox(mailbox, client)),
+  )
+  const refused = refusals.find((scope) => scope.isLeft())
+  if (refused) return Left(refused.value as UserError)
 
   const result = await client.graphQuery(params.method, params.path, body, version, params.headers)
   return result

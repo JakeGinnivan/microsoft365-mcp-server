@@ -7,6 +7,8 @@ import { getAccessToken } from "../auth"
 import { GRAPH_API_BASE } from "../auth/scopes"
 import { getGraphClient } from "../client/graph-client"
 import { defaultVersion } from "../client/graph-version"
+import { resolveMailbox } from "../mail/mailbox"
+import { mailboxOfUrl } from "../mail/mailbox-path"
 import type { GraphApiVersion, GraphDriveItem } from "../types"
 
 const requireClient = () => {
@@ -85,12 +87,21 @@ export const readDocument = async (params: {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
 
+  const version = params.api_version ?? defaultVersion()
+
+  // list_attachments prints /users/{address}/... paths for other mailboxes, so this is the same
+  // door the mail tools guard and has to apply the same mailbox check, before any request.
+  const mailbox = mailboxOfUrl(`${GRAPH_API_BASE}/${version}${params.path}`)
+  if (mailbox !== undefined) {
+    const scope = await resolveMailbox(mailbox, client)
+    if (scope.isLeft()) return Left(scope.value as UserError)
+  }
+
   const tokenResult = await getAccessToken()
   if (tokenResult.isLeft()) {
     return Left(new UserError((tokenResult.value as { message: string }).message))
   }
   const token = tokenResult.value as string
-  const version = params.api_version ?? defaultVersion()
 
   if (isMessageMimePath(params.path)) {
     return Left(

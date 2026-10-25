@@ -249,6 +249,15 @@ scopes the agent; it does not authorise anything.
     -PolicyScopeGroupId mailbox-group@example.com -AccessRight RestrictAccess
   ```
 
+`read_document` and `graph_query` take raw Graph paths, so they apply the same check to
+any path under `/users/{address}/...` (or `/users('{address}')/...`), reads included, and
+`graph_query` to every sub-request of a `$batch`, refusing the whole batch if one fails.
+Directory reads about a user are not mailbox data and are not checked: the user itself
+(`/users/{address}`), `photo`, `photos`, `manager`, `directReports`, `memberOf`,
+`transitiveMemberOf`, `presence`, and OneDrive (`drive`, `drives`). Anything else under a
+user (messages, calendars, contacts, mailbox settings, To Do, and any resource not listed
+here) is treated as mailbox data. `/me/...`, `/drives/...` and `/sites/...` are unaffected.
+
 Note that `scan_messages` refs are per-mailbox: a ref from one mailbox passed to a call
 addressing another is refused with an explanation rather than resolving to the wrong
 message.
