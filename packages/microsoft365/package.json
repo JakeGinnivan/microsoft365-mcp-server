@@ -72,8 +72,8 @@
     "@azure/identity": "^4.14.0",
     "exceljs": "^4.4.0",
     "fastmcp": "^4.22.10",
-    "functype": "^1.16.0",
-    "functype-log": "^1.16.0",
+    "functype": "^1.19.0",
+    "functype-log": "^1.19.0",
     "mammoth": "^1.13.0",
     "unpdf": "^1.9.0",
     "zod": "^4.6.7"

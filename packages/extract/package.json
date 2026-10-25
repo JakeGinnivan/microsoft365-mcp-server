@@ -33,7 +33,7 @@
   "prettier": "ts-builds/prettier",
   "dependencies": {
     "exceljs": "^4.4.0",
-    "functype": "^1.16.0",
+    "functype": "^1.19.0",
     "mammoth": "^1.13.0",
     "unpdf": "^1.9.0"
   },
