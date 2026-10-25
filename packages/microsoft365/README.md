@@ -13,7 +13,7 @@ A Model Context Protocol (MCP) server for Microsoft 365 — manage email, calend
 
 ## Features
 
-- **75 Tools** across 12 Microsoft 365 domains + generic Graph API escape hatch
+- **76 Tools** across 12 Microsoft 365 domains + generic Graph API escape hatch
 - **5 Auth Modes**: Interactive, certificate, client secret, client-provided token, OAuth proxy
 - **Draft Workflow**: Create drafts for user review in Outlook, then send when approved
 - **Tool Filtering**: Presets, regex patterns, read-only mode, and org-mode gating
