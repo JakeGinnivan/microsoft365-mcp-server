@@ -83,7 +83,7 @@ const readCache = (path: string): string | undefined => {
     const mode = statSync(path).mode & 0o777
     if (process.platform !== "win32" && (mode & GROUP_OR_OTHER) !== 0) {
       console.error(
-        `[Auth] Ignoring token cache at ${path}: permissions are ${mode.toString(8)}, expected 600. ` +
+        `[Auth] Ignoring token cache at ${path}: permissions are ${mode.toString(8)}, but only its owner may have access (600). ` +
           "The file may have been exposed, so it will be discarded and a fresh sign-in requested.",
       )
       discard(path)
