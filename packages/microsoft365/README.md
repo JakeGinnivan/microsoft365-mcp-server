@@ -197,11 +197,25 @@ Or in Azure Portal: Enterprise Applications > your app > Users and groups > Add 
 Mail tools take an optional `mailbox` parameter — an email address — so one server can
 work across a household or a team: your own mail by default, someone else's when named.
 
+What `MS365_ALLOWED_MAILBOXES` means depends on who the server signs in as:
+
+| Sign-in                                           | List empty (default)                   | List set                                 |
+| ------------------------------------------------- | -------------------------------------- | ---------------------------------------- |
+| As a user (interactive, device code, OAuth proxy) | Any mailbox your account can reach     | Only the listed mailboxes, plus your own |
+| As an application (client secret, certificate)    | No mailbox; every mail call is refused | Only the listed mailboxes                |
+
+Signed in as yourself, Microsoft already limits you to the mailboxes you have been given
+access to, so the list is an optional narrowing. Signed in as an application, Graph would
+reach any mailbox the tenant's ApplicationAccessPolicy allows, so the list is required.
+Client token mode can carry either kind of token and goes by the token itself: a token
+with delegated scopes (`scp`) counts as a user, one with app roles (`roles`) as an
+application. A token it cannot read (personal-account tokens are opaque) keeps your own
+mailbox but reaches no other until it is listed.
+
 ```bash
 MS365_ALLOWED_MAILBOXES="bel@example.com,household@example.com"
 ```
 
-Nothing else is reachable until it is listed, in every auth mode, delegated included.
 Omitting `mailbox` means your own mailbox, so existing setups need no configuration and
 behave exactly as before. Naming your own address (primary, UPN or an alias) also works
 without listing it and is treated the same as omitting it. This applies whenever you sign
@@ -220,26 +234,32 @@ Two boundaries apply, and both matter:
 The env var is configuration, not security: it lets a single app registration serve
 several agents with different reach — a triage bot limited to one mailbox, an assistant
 given two — without minting a registration per agent. It cannot widen what Azure allows.
-It still applies when signed in as yourself: you may have Exchange access to mailboxes (a
-partner's, say) that you do not want this particular server or agent to touch. The list
-scopes the agent; it does not authorise anything.
+Signed in as yourself, set it when you have Exchange access to mailboxes (a partner's,
+say) that you do not want this particular server or agent to touch. The list scopes the
+agent; it does not authorise anything.
 
 **Which permission you need depends on how the server authenticates:**
 
-- **Interactive / OAuth proxy (delegated).** Reaching another mailbox needs a `.Shared`
-  scope; the non-shared one does not grant it. Add it explicitly:
+- **OAuth proxy (delegated).** Reaching another mailbox needs a `.Shared` scope; the
+  non-shared one does not grant it. The proxy requests its scopes itself, so add it
+  explicitly:
 
   ```bash
   MS365_EXTRA_SCOPES="Mail.ReadWrite.Shared"   # or Mail.Read.Shared for read-only
   ```
 
-  The mailbox's owner must also have granted you delegate access (in Outlook, or via
+- **Interactive / device code / client token (delegated).** These request `.default`, so
+  `MS365_EXTRA_SCOPES` is not read. Add `Mail.ReadWrite.Shared` (or `Mail.Read.Shared`) as
+  a delegated permission on the app registration, consent to it, and sign in again.
+
+  In both delegated cases, the mailbox's owner must also have granted you delegate access (in Outlook, or via
   `Add-MailboxPermission`). Actions are performed as you: Exchange audit records
   distinguish delegate access from owner access, but not one delegate tool from another.
 
 - **Client secret / certificate (app-only).** These request `.default`, so permissions
-  come from the app registration — nothing to add here. There is no `/me` for an app-only
-  token, so `mailbox` is **required** on every mail call; a call without it is refused
+  come from the app registration — nothing to add here. Each mailbox must be listed in
+  `MS365_ALLOWED_MAILBOXES`. There is no `/me` for an app-only token, so `mailbox` is
+  **required** on every mail call; a call without it is refused
   with an error saying to pass one, before anything reaches Graph. Scope the app to specific
   mailboxes with an ApplicationAccessPolicy, otherwise `Mail.ReadWrite` reaches every
   mailbox in the tenant:
@@ -264,14 +284,14 @@ message.
 
 ### Safety Layers
 
-| Layer                    | Protection                                                   | Default            |
-| ------------------------ | ------------------------------------------------------------ | ------------------ |
-| **User assignment**      | Only assigned users can authenticate                         | Off (enable above) |
-| **Platform governance**  | Per-tool allow/confirm/deny in Claude Desktop Enterprise     | Platform-level     |
-| **Tool filtering**       | Presets, read-only, org-mode gating                          | All tools          |
-| **Mailbox allowlist**    | `MS365_ALLOWED_MAILBOXES` caps which mailboxes are reachable | Own mailbox only   |
-| **Tenant restriction**   | `MS365_TENANT_ID` locks to one org                           | `common`           |
-| **M365 native recovery** | Recycle bins, version history                                | Built-in           |
+| Layer                    | Protection                                                   | Default                                                       |
+| ------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------- |
+| **User assignment**      | Only assigned users can authenticate                         | Off (enable above)                                            |
+| **Platform governance**  | Per-tool allow/confirm/deny in Claude Desktop Enterprise     | Platform-level                                                |
+| **Tool filtering**       | Presets, read-only, org-mode gating                          | All tools                                                     |
+| **Mailbox allowlist**    | `MS365_ALLOWED_MAILBOXES` caps which mailboxes are reachable | Delegated: whatever Microsoft allows the user; app-only: none |
+| **Tenant restriction**   | `MS365_TENANT_ID` locks to one org                           | `common`                                                      |
+| **M365 native recovery** | Recycle bins, version history                                | Built-in                                                      |
 
 **Recovery by domain:**
 
@@ -545,33 +565,33 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 
 ## Environment Variables
 
-| Variable                  | Description                                                                                                               | Default             |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `MS365_AUTH_MODE`         | Auth mode: `interactive`, `certificate`, `client-secret`, `client-token`, `oauth-proxy`                                   | `interactive`       |
-| `MS365_TENANT_ID`         | Azure AD tenant ID                                                                                                        | `common`            |
-| `MS365_CLIENT_ID`         | Azure AD application (client) ID                                                                                          | --                  |
-| `MS365_CLIENT_SECRET`     | Client secret (for `client-secret` and `oauth-proxy` modes)                                                               | --                  |
-| `MS365_CERT_PATH`         | Certificate path (for `certificate` mode)                                                                                 | --                  |
-| `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                                                           | --                  |
-| `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                                                            | --                  |
-| `MS365_USE_DEVICE_CODE`   | Skip the browser in `interactive` mode and use device code                                                                | `false`             |
-| `MS365_TOKEN_CACHE`       | Persist the `interactive` token cache to disk; `false` keeps it in memory only                                            | `true`              |
-| `MS365_TOKEN_CACHE_PATH`  | Directory for the persisted token cache and account record                                                                | `~/.config/...`     |
-| `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                                                             | --                  |
-| `MS365_GRAPH_VERSION`     | Graph API version: `v1.0` or `beta`                                                                                       | `v1.0`              |
-| `TRANSPORT_TYPE`          | Transport: `stdio` or `httpStream`                                                                                        | `stdio`             |
-| `PORT`                    | HTTP server port                                                                                                          | `3000`              |
-| `HOST`                    | HTTP server host                                                                                                          | `127.0.0.1`         |
-| `MS365_PRESETS`           | Comma-separated presets: `personal`, `collaboration`, `productivity`, `rag`, `all`                                        | -- (all tools)      |
-| `MS365_EXTRA_SCOPES`      | Comma-separated Graph scopes added to the requested set (OAuth proxy mode)                                                | --                  |
-| `MS365_MAX_EXTRACT_BYTES` | Ceiling over `read_document`'s per-format input caps, in bytes. Never raises them.                                        | -- (per-format)     |
-| `MS365_ALLOWED_MAILBOXES` | Comma-separated addresses the `mailbox` parameter may target. Unset = own mailbox only                                    | --                  |
-| `MS365_ENABLED_TOOLS`     | Regex pattern to filter tools                                                                                             | --                  |
-| `MS365_READ_ONLY`         | Hide write tools                                                                                                          | `false`             |
-| `MS365_ORG_MODE`          | Enable org-only tools (teams, chats, groups, planner)                                                                     | `false`             |
-| `MS365_REQUIRE_DRAFT`     | Hide all `send_*` mail tools and block direct sends through `graph_query`; force the `create_*_draft` + `send_draft` flow | `false`             |
-| `TOKEN_STORAGE_PATH`      | Directory for persistent OAuth token storage                                                                              | `/tmp/ms365-tokens` |
-| `FASTMCP_HOST`            | Bind address for HTTP server (set `0.0.0.0` in containers)                                                                | `localhost`         |
+| Variable                  | Description                                                                                                                     | Default             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `MS365_AUTH_MODE`         | Auth mode: `interactive`, `certificate`, `client-secret`, `client-token`, `oauth-proxy`                                         | `interactive`       |
+| `MS365_TENANT_ID`         | Azure AD tenant ID                                                                                                              | `common`            |
+| `MS365_CLIENT_ID`         | Azure AD application (client) ID                                                                                                | --                  |
+| `MS365_CLIENT_SECRET`     | Client secret (for `client-secret` and `oauth-proxy` modes)                                                                     | --                  |
+| `MS365_CERT_PATH`         | Certificate path (for `certificate` mode)                                                                                       | --                  |
+| `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                                                                 | --                  |
+| `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                                                                  | --                  |
+| `MS365_USE_DEVICE_CODE`   | Skip the browser in `interactive` mode and use device code                                                                      | `false`             |
+| `MS365_TOKEN_CACHE`       | Persist the `interactive` token cache to disk; `false` keeps it in memory only                                                  | `true`              |
+| `MS365_TOKEN_CACHE_PATH`  | Directory for the persisted token cache and account record                                                                      | `~/.config/...`     |
+| `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                                                                   | --                  |
+| `MS365_GRAPH_VERSION`     | Graph API version: `v1.0` or `beta`                                                                                             | `v1.0`              |
+| `TRANSPORT_TYPE`          | Transport: `stdio` or `httpStream`                                                                                              | `stdio`             |
+| `PORT`                    | HTTP server port                                                                                                                | `3000`              |
+| `HOST`                    | HTTP server host                                                                                                                | `127.0.0.1`         |
+| `MS365_PRESETS`           | Comma-separated presets: `personal`, `collaboration`, `productivity`, `rag`, `all`                                              | -- (all tools)      |
+| `MS365_EXTRA_SCOPES`      | Comma-separated Graph scopes added to the requested set (OAuth proxy mode)                                                      | --                  |
+| `MS365_MAX_EXTRACT_BYTES` | Ceiling over `read_document`'s per-format input caps, in bytes. Never raises them.                                              | -- (per-format)     |
+| `MS365_ALLOWED_MAILBOXES` | Comma-separated addresses the `mailbox` parameter may target. Unset = any the user can reach when delegated, none when app-only | --                  |
+| `MS365_ENABLED_TOOLS`     | Regex pattern to filter tools                                                                                                   | --                  |
+| `MS365_READ_ONLY`         | Hide write tools                                                                                                                | `false`             |
+| `MS365_ORG_MODE`          | Enable org-only tools (teams, chats, groups, planner)                                                                           | `false`             |
+| `MS365_REQUIRE_DRAFT`     | Hide all `send_*` mail tools and block direct sends through `graph_query`; force the `create_*_draft` + `send_draft` flow       | `false`             |
+| `TOKEN_STORAGE_PATH`      | Directory for persistent OAuth token storage                                                                                    | `/tmp/ms365-tokens` |
+| `FASTMCP_HOST`            | Bind address for HTTP server (set `0.0.0.0` in containers)                                                                      | `localhost`         |
 
 ### Graph resilience
 
