@@ -6,7 +6,7 @@ import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
 
 import { getGraphClient } from "../client/graph-client"
-import { type MailboxScope, OWN_MAILBOX, resolveMailbox } from "../mail/mailbox"
+import { type MailboxScope, resolveMailbox } from "../mail/mailbox"
 import type { GraphAttachment, GraphMailFolder, GraphMessage, ODataResponse } from "../types"
 import {
   formatAttachmentList,
@@ -657,18 +657,20 @@ export const getAttachmentUploadConfig = async (params: {
   name: string
   localFile?: string
   contentType?: string
+  mailbox?: string
 }): Promise<Either<UserError, string>> => {
-  const client = requireClient()
-  if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const resolvedScope = await withScope(params.mailbox)
+  if (resolvedScope.isLeft()) return scopeFailure(resolvedScope)
+  const { scope, client } = resolvedScope.orThrow()
 
   const name = params.name.trim()
   if (!name) return Left(new UserError("name is required: the file name the attachment will show, e.g. report.pdf"))
 
-  const messageId = resolveMessageId(params.message_id, OWN_MAILBOX)
+  const messageId = resolveMessageId(params.message_id, scope)
   if (messageId.isLeft()) return messageId as Either<UserError, string>
   const id = messageId.orThrow()
 
-  const draft = await fetchDraft(client, id, OWN_MAILBOX, "Attachments can only be added to drafts")
+  const draft = await fetchDraft(client, id, scope, "Attachments can only be added to drafts")
   if (draft.isLeft()) return Left(draft.value as UserError)
 
   const baseUrl = resolveUploadBaseUrl()
@@ -681,7 +683,15 @@ export const getAttachmentUploadConfig = async (params: {
   }
 
   const contentType = resolveUploadContentType(params.contentType, name)
-  const query = new URLSearchParams({ messageId: id, name, contentType, encoding: "base64" })
+  // The relay checks the mailbox again when the upload arrives: the URL is only a pointer, and a
+  // caller could edit it.
+  const query = new URLSearchParams({
+    messageId: id,
+    name,
+    contentType,
+    encoding: "base64",
+    ...(scope.mailbox ? { mailbox: scope.mailbox } : {}),
+  })
   const uploadUrl = `${baseUrl}/upload/attachment?${query.toString()}`
   const authHeader = await relayAuthHeader()
 

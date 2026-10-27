@@ -55,6 +55,23 @@ describe("attachFileToDraft", () => {
     })
   })
 
+  it("checks and attaches in the mailbox it is given", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(draft())
+      .mockResolvedValueOnce(json({ id: "att-1", size: 4 }, 201))
+    vi.stubGlobal("fetch", fetchSpy)
+
+    const prefix = "/users/shared%40example.com"
+    const result = await attachFileToDraft(apiBase, "d", "tok", Buffer.from("%PDF"), "r.pdf", "application/pdf", prefix)
+
+    expect(result.isRight()).toBe(true)
+    expect(callsOf(fetchSpy).map((call) => call?.url)).toEqual([
+      `${apiBase}${prefix}/messages/d?$select=id,isDraft`,
+      `${apiBase}${prefix}/messages/d/attachments`,
+    ])
+  })
+
   it("refuses a message that is not a draft without attaching anything", async () => {
     const fetchSpy = vi.fn().mockResolvedValueOnce(json({ id: "msg", isDraft: false }))
     vi.stubGlobal("fetch", fetchSpy)

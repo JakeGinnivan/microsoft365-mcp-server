@@ -44,8 +44,10 @@ const networkError = (what: string, error: unknown): GraphApiError => {
   return { type: "network", message: `Network error ${what}: ${message}` }
 }
 
-const messagePath = (apiBase: string, messageId: string): string =>
-  `${apiBase}/me/messages/${encodeURIComponent(messageId)}`
+// mailboxPrefix is "/me" or "/users/{encoded address}", already checked by the caller against
+// the server's mailbox rules; nothing here decides which mailbox may be reached.
+const messagePath = (apiBase: string, messageId: string, mailboxPrefix: string): string =>
+  `${apiBase}${mailboxPrefix}/messages/${encodeURIComponent(messageId)}`
 
 // Graph lets any message take attachments, so the draft rule is ours. The relay URL carries the
 // message id in its query string, and a caller could swap it for a received or sent message.
@@ -53,9 +55,10 @@ export const requireDraftMessage = async (
   apiBase: string,
   messageId: string,
   accessToken: string,
+  mailboxPrefix = "/me",
 ): Promise<Either<GraphApiError, void>> => {
   try {
-    const response = await resilientFetch(`${messagePath(apiBase, messageId)}?$select=id,isDraft`, {
+    const response = await resilientFetch(`${messagePath(apiBase, messageId, mailboxPrefix)}?$select=id,isDraft`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     if (!response.ok) return Left(await graphError(response, "Failed to read message"))
@@ -80,10 +83,11 @@ const attachInline = async (
   buffer: Buffer,
   name: string,
   contentType: string,
+  mailboxPrefix: string,
 ): Promise<Either<GraphApiError, MessageAttachment>> => {
   try {
     // POST is not retried after a lost response, so a timeout cannot attach the file twice.
-    const response = await resilientFetch(`${messagePath(apiBase, messageId)}/attachments`, {
+    const response = await resilientFetch(`${messagePath(apiBase, messageId, mailboxPrefix)}/attachments`, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -170,13 +174,17 @@ const attachViaSession = async (
   buffer: Buffer,
   name: string,
   contentType: string,
+  mailboxPrefix: string,
 ): Promise<Either<GraphApiError, MessageAttachment>> => {
   try {
-    const response = await resilientFetch(`${messagePath(apiBase, messageId)}/attachments/createUploadSession`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ AttachmentItem: { attachmentType: "file", name, size: buffer.length, contentType } }),
-    })
+    const response = await resilientFetch(
+      `${messagePath(apiBase, messageId, mailboxPrefix)}/attachments/createUploadSession`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ AttachmentItem: { attachmentType: "file", name, size: buffer.length, contentType } }),
+      },
+    )
     if (!response.ok) return Left(await graphError(response, "Failed to create attachment upload session"))
     const session = (await response.json()) as { uploadUrl?: string }
     const uploadUrl = outlookUploadUrl(session.uploadUrl)
@@ -198,6 +206,7 @@ export const attachFile = async (
   buffer: Buffer,
   name: string,
   contentType: string,
+  mailboxPrefix = "/me",
 ): Promise<Either<GraphApiError, MessageAttachment>> => {
   if (buffer.length > MAX_ATTACHMENT_SIZE) {
     return Left({
@@ -207,7 +216,7 @@ export const attachFile = async (
     })
   }
   type Attached = Promise<Either<GraphApiError, MessageAttachment>>
-  const args = [apiBase, messageId, accessToken, buffer, name, contentType] as const
+  const args = [apiBase, messageId, accessToken, buffer, name, contentType, mailboxPrefix] as const
   if (buffer.length < ATTACHMENT_INLINE_LIMIT) {
     const inline = await attachInline(...args)
     return inline.fold<Attached>(
@@ -230,8 +239,9 @@ export const attachFileToDraft = async (
   buffer: Buffer,
   name: string,
   contentType: string,
+  mailboxPrefix = "/me",
 ): Promise<Either<GraphApiError, MessageAttachment>> => {
-  const draft = await requireDraftMessage(apiBase, messageId, accessToken)
+  const draft = await requireDraftMessage(apiBase, messageId, accessToken, mailboxPrefix)
   if (draft.isLeft()) return Left(draft.value as GraphApiError)
-  return attachFile(apiBase, messageId, accessToken, buffer, name, contentType)
+  return attachFile(apiBase, messageId, accessToken, buffer, name, contentType, mailboxPrefix)
 }

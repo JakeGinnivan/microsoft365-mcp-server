@@ -23,8 +23,9 @@ import { getAccessToken, initializeAuth } from "./auth"
 import { createAzureAuthProvider } from "./auth/oauth-provider"
 import { GRAPH_API_BASE } from "./auth/scopes"
 import { withToken } from "./auth/token-context"
-import { initializeGraphClient } from "./client/graph-client"
+import { getGraphClient, initializeGraphClient } from "./client/graph-client"
 import { defaultVersion } from "./client/graph-version"
+import { resolveMailbox } from "./mail/mailbox"
 import {
   batchMoveMessages,
   copyOnenotePage,
@@ -670,6 +671,7 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
         .optional()
         .describe("Local file path to include in the curl example. If omitted, a placeholder is used."),
       contentType: z.string().optional().describe("MIME type override. Auto-detected from the name if omitted."),
+      mailbox: MAILBOX_PARAM,
     }),
     execute: async (params) => unwrapResult(await getAttachmentUploadConfig(params)),
     domain: "mail",
@@ -1927,6 +1929,18 @@ const relayApiBase = (req: UploadRequestContext): Either<RelayResponse, string> 
     : Left({ status: 400, body: { error: 'apiVersion must be "v1.0" or "beta"' } })
 }
 
+// The upload URL names the mailbox in its query string, where a caller could edit it, so the
+// relay applies the same mailbox rules the tool did, as the user whose token it carries.
+const relayMailboxPrefix = async (req: UploadRequestContext, token: string): Promise<Either<RelayResponse, string>> => {
+  const client = getGraphClient()
+  if (client.isNone()) return Left({ status: 503, body: { error: "MS 365 client not initialized" } })
+  const scope = await withToken(token, () => resolveMailbox(req.query("mailbox"), client.orThrow()))
+  return scope.fold<Either<RelayResponse, string>>(
+    (error) => Left({ status: 403, body: { error: error.message } }),
+    (resolved) => Right(resolved.prefix),
+  )
+}
+
 const handleAttachmentUpload = async (req: UploadRequestContext, oauthMode: boolean): Promise<RelayResponse> => {
   const messageId = req.query("messageId")
   const name = req.query("name")?.trim()
@@ -1940,9 +1954,13 @@ const handleAttachmentUpload = async (req: UploadRequestContext, oauthMode: bool
   if (auth.isLeft()) return auth.value as RelayResponse
   const token = auth.value as string
 
+  const mailbox = await relayMailboxPrefix(req, token)
+  if (mailbox.isLeft()) return mailbox.value as RelayResponse
+  const prefix = mailbox.value as string
+
   // In oauth-proxy mode any bearer passes relayAuth; this one GET is what proves it, so it runs
   // before the body (up to 150 MB) is read. It also enforces the draft rule.
-  const draft = await requireDraftMessage(apiBase.value as string, messageId, token)
+  const draft = await requireDraftMessage(apiBase.value as string, messageId, token, prefix)
   if (draft.isLeft()) {
     const err = draft.value as { message: string; status?: number }
     return { status: err.status ?? 502, body: { error: err.message } }
@@ -1955,7 +1973,7 @@ const handleAttachmentUpload = async (req: UploadRequestContext, oauthMode: bool
   const contentType = resolveUploadContentType(req.query("contentType"), name)
   console.error(`[AttachmentUpload] bytes=${buffer.length} contentType=${contentType}`)
 
-  const result = await attachFile(apiBase.value as string, messageId, token, buffer, name, contentType)
+  const result = await attachFile(apiBase.value as string, messageId, token, buffer, name, contentType, prefix)
   if (result.isLeft()) {
     const err = result.value as { message: string; status?: number }
     return { status: err.status ?? 502, body: { error: err.message } }

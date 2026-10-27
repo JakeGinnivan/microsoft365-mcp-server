@@ -236,6 +236,60 @@ describe.each(["client-token", "oauth-proxy"])("%s draft attachment relay", (mod
     ])
   })
 
+  it("attaches to a draft in a permitted shared mailbox through that mailbox", async () => {
+    vi.stubEnv("MS365_ALLOWED_MAILBOXES", "shared@example.com")
+    const fetchSpy = vi.fn(async (url: string) =>
+      new URL(url).pathname.endsWith("/me")
+        ? graph({ error: { message: "not under test" } }, 500)
+        : String(url).includes("/attachments")
+          ? graph({ id: "att", size: 4 }, 201)
+          : graph({ id: "draft", isDraft: true }),
+    )
+    vi.stubGlobal("fetch", fetchSpy)
+    await import("../src/index")
+    await vi.waitFor(() => expect(server.start).toHaveBeenCalled())
+
+    const context = request({
+      messageId: "draft",
+      name: "report.pdf",
+      encoding: "base64",
+      mailbox: "shared@example.com",
+    })
+    await attachmentHandler()?.(context)
+
+    expect(context.json).toHaveBeenCalledWith({ id: "att", name: "report.pdf", size: 4 }, 200)
+    const messagePaths = fetchSpy.mock.calls
+      .map(([url]) => new URL(String(url)).pathname)
+      .filter((path) => path.includes("/messages/"))
+    expect(messagePaths).toEqual([
+      "/v1.0/users/shared%40example.com/messages/draft",
+      "/v1.0/users/shared%40example.com/messages/draft/attachments",
+    ])
+  })
+
+  // The mailbox rides in the upload URL's query string, so an edited URL must not reach a
+  // mailbox the tool would have refused.
+  it("refuses an unpermitted mailbox with 403 before reading the message or the body", async () => {
+    vi.stubEnv("MS365_ALLOWED_MAILBOXES", "shared@example.com")
+    const fetchSpy = vi.fn(async () => graph({ error: { message: "not under test" } }, 500))
+    vi.stubGlobal("fetch", fetchSpy)
+    await import("../src/index")
+    await vi.waitFor(() => expect(server.start).toHaveBeenCalled())
+
+    const context = request({
+      messageId: "draft",
+      name: "report.pdf",
+      encoding: "base64",
+      mailbox: "other@example.com",
+    })
+    const arrayBuffer = vi.spyOn(context.req, "arrayBuffer")
+    await attachmentHandler()?.(context)
+
+    expect(context.json).toHaveBeenCalledWith({ error: expect.stringContaining("is not permitted") }, 403)
+    expect(arrayBuffer).not.toHaveBeenCalled()
+    expect(fetchSpy.mock.calls.every(([url]) => !String(url).includes("/messages"))).toBe(true)
+  })
+
   it.each(["/upload", "/upload/attachment"])(
     "rejects an unknown apiVersion on %s before calling Graph",
     async (path) => {

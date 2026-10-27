@@ -1,6 +1,6 @@
 import { resolveUploadTicket } from "@sapientsai/ms-graph-core"
 import { Some } from "functype"
-import { Right } from "functype/either"
+import { Left, Right } from "functype/either"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
@@ -13,11 +13,12 @@ import { getGraphClient } from "../src/client/graph-client"
 import { getAttachmentUploadConfig } from "../src/tools/mail-tools"
 import { rememberMessageId } from "../src/utils/message-refs"
 
-const mockClient = { getDraftState: vi.fn() }
+const mockClient = { getDraftState: vi.fn(), request: vi.fn() }
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getGraphClient).mockReturnValue(Some(mockClient as never))
+  mockClient.request.mockResolvedValue(Left({ type: "api", message: "own-address lookup not under test" }))
   vi.stubEnv("MS365_PUBLIC_BASE_URL", "https://ms365.example/")
 })
 afterEach(() => vi.unstubAllEnvs())
@@ -75,5 +76,45 @@ describe("getAttachmentUploadConfig", () => {
 
     expect(result.isLeft()).toBe(true)
     expect(mockClient.getDraftState).not.toHaveBeenCalled()
+  })
+
+  // A draft created in a shared mailbox lives there, so it must be read and attached there too.
+  describe("in another mailbox", () => {
+    beforeEach(() => vi.stubEnv("MS365_ALLOWED_MAILBOXES", "shared@example.com"))
+
+    it("checks the draft in that mailbox and carries it into the relay URL", async () => {
+      mockClient.getDraftState.mockResolvedValue(Right({ id: "AAMkShared", isDraft: true }))
+
+      const result = await getAttachmentUploadConfig({
+        message_id: "AAMkShared",
+        name: "a.pdf",
+        mailbox: "Shared@Example.com",
+      })
+
+      expect(mockClient.getDraftState).toHaveBeenCalledWith("AAMkShared", "/users/shared%40example.com")
+      const url = new URL((JSON.parse(result.value as string) as { uploadUrl: string }).uploadUrl)
+      expect(url.searchParams.get("mailbox")).toBe("shared@example.com")
+    })
+
+    it("leaves mailbox out of the relay URL for your own mailbox", async () => {
+      mockClient.getDraftState.mockResolvedValue(Right({ id: "AAMkDraftMessage", isDraft: true }))
+
+      const result = await getAttachmentUploadConfig({ message_id: "AAMkDraftMessage", name: "a.pdf" })
+
+      expect(
+        new URL((JSON.parse(result.value as string) as { uploadUrl: string }).uploadUrl).searchParams.has("mailbox"),
+      ).toBe(false)
+    })
+
+    it("refuses an unpermitted mailbox before reading the message", async () => {
+      const result = await getAttachmentUploadConfig({
+        message_id: "AAMkX",
+        name: "a.pdf",
+        mailbox: "other@example.com",
+      })
+
+      expect((result.value as Error).message).toContain("is not permitted")
+      expect(mockClient.getDraftState).not.toHaveBeenCalled()
+    })
   })
 })
