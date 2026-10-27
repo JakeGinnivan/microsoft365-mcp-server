@@ -83,7 +83,9 @@ Either way, the token cache and the signed-in account are saved to
 restart reuses them instead of asking you to sign in again. The files are written
 with mode `0600`, and a cache file readable by anyone else is discarded rather than
 used. Set `MS365_TOKEN_CACHE=false` to keep tokens in memory only, or
-`MS365_TOKEN_CACHE_PATH` to put them somewhere else.
+`MS365_TOKEN_CACHE_PATH` to put them somewhere else. In a container, point
+`MS365_TOKEN_CACHE_PATH` at a mounted volume, or the cache is lost when the
+container is rebuilt.
 
 ### Client Secret
 
