@@ -68,10 +68,20 @@ describe("resolveMailboxScope", () => {
     expect(message).not.toContain("household@example.com")
   })
 
-  it("says how to configure one when the allowlist is empty", () => {
+  it("reaches any mailbox for a signed-in user when the allowlist is empty", () => {
     const scope = resolveMailboxScope("bel@example.com", allowed(undefined))
+    expect(scope.orThrow().prefix).toBe("/users/bel%40example.com")
+  })
+
+  it.each(["app-only", "unknown"] as const)("names the setting when the allowlist is empty in %s auth", (kind) => {
+    const scope = resolveMailboxScope("bel@example.com", allowed(undefined), kind)
     expect(scope.isLeft()).toBe(true)
     expect((scope.value as { message: string }).message).toContain("MS365_ALLOWED_MAILBOXES")
+  })
+
+  // An opaque client-token may well be a personal account's, which does have a mailbox.
+  it("keeps the /me default when the token kind is unknown", () => {
+    expect(resolveMailboxScope(undefined, allowed(undefined), "unknown").orThrow().prefix).toBe("/me")
   })
 
   // An address is a path segment; "+" in particular is a valid local part and would
@@ -94,25 +104,26 @@ describe("resolveMailboxScope", () => {
 // Graph as /me and came back as a raw Graph error instead of saying what to pass.
 describe("resolveMailboxScope in app-only auth", () => {
   it("refuses an omitted mailbox and says to pass one", () => {
-    const scope = resolveMailboxScope(undefined, allowed("bel@example.com"), true)
+    const scope = resolveMailboxScope(undefined, allowed("bel@example.com"), "app-only")
     expect(scope.isLeft()).toBe(true)
     expect((scope.value as { message: string }).message).toContain("Pass mailbox")
   })
 
   it("refuses a blank mailbox the same way, not with the own-mailbox hint", () => {
-    const message = (resolveMailboxScope(" ", allowed("bel@example.com"), true).value as { message: string }).message
+    const message = (resolveMailboxScope(" ", allowed("bel@example.com"), "app-only").value as { message: string })
+      .message
     expect(message).toContain("Pass mailbox")
     expect(message).not.toContain("your own mailbox")
   })
 
   it("resolves a named, allowed mailbox as usual", () => {
-    const scope = resolveMailboxScope("bel@example.com", allowed("bel@example.com"), true)
+    const scope = resolveMailboxScope("bel@example.com", allowed("bel@example.com"), "app-only")
     expect(scope.orThrow().prefix).toBe("/users/bel%40example.com")
   })
 
   // The allowlist still applies unchanged; app-only only removes the /me default.
   it("still refuses a mailbox that is not on the allowlist", () => {
-    const scope = resolveMailboxScope("someone@example.com", allowed("bel@example.com"), true)
+    const scope = resolveMailboxScope("someone@example.com", allowed("bel@example.com"), "app-only")
     expect((scope.value as { message: string }).message).toContain("not permitted")
   })
 })

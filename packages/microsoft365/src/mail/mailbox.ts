@@ -15,10 +15,17 @@
 //                  a triage bot limited to one mailbox, a household assistant given two —
 //                  without minting a registration per agent.
 //
-// The env var is configuration, not security: it fails closed and gives a clear error
-// instead of a Graph 403, but it is Azure that actually enforces access. It applies in
-// delegated modes too: a user can often open mailboxes in Exchange (a partner's, say) that
-// they do not want a given agent to touch, so the list scopes the agent, not the user.
+// The env var is configuration, not security: it gives a clear error instead of a Graph 403,
+// but it is Azure that actually enforces access. What an empty list means depends on who the
+// server signs in as:
+//
+//   delegated      Graph already limits the user to the mailboxes they have been given, so
+//                  with no list they reach any of them. Setting the list narrows the agent
+//                  further: a user can often open mailboxes in Exchange (a partner's, say)
+//                  that they do not want a given agent to touch.
+//   app-only       Graph would allow any mailbox in the tenant the ApplicationAccessPolicy
+//                  permits, so the list is the server's only limit and an empty one reaches
+//                  nothing.
 //
 // The signed-in user's own address needs no listing: it is the same mailbox as /me, and
 // routes there, so a ref or cursor from it matches one issued with mailbox omitted.
@@ -30,6 +37,7 @@ import { type Either, Left, Right } from "functype/either"
 
 import { getAccessToken, getAuthMode } from "../auth/auth-manager"
 import { getContextToken } from "../auth/token-context"
+import { parseJwtKind, type TokenKind } from "../auth/token-scopes"
 import type { AuthMode, GraphUser, ODataParams } from "../types"
 
 /** Graph path prefix for a mailbox: "/me" for the signed-in user, else "/users/{address}". */
@@ -47,8 +55,8 @@ const normalize = (address: string): string => address.trim().toLowerCase()
 
 /**
  * The mailboxes this deployment may address, from MS365_ALLOWED_MAILBOXES
- * (comma-separated). Unset or empty means no other mailbox is reachable: the server
- * can still work, but only against /me.
+ * (comma-separated). Empty means no narrowing when signed in as a user, and no mailbox
+ * at all when signed in as an application.
  */
 export const resolveAllowedMailboxes = (
   raw: string | undefined = process.env.MS365_ALLOWED_MAILBOXES,
@@ -60,19 +68,44 @@ export const resolveAllowedMailboxes = (
       .filter((entry) => entry.length > 0),
   )
 
-// Client-secret and certificate tokens belong to an application, not a user, so Graph has
-// no /me for them. client-token is left out: the token handed in may be either kind.
-const APP_ONLY_MODES: ReadonlySet<AuthMode> = new Set(["client-secret", "certificate"])
-
-export const isAppOnlyAuth = (): boolean =>
+// oauth-proxy never runs setupAuth, so getAuthMode() is unset on the hosted server; the env var
+// is what chose the mode there, and is read the same way elsewhere (meetings-tools).
+const configuredMode = (): string =>
   getAuthMode().fold(
-    () => false,
-    (mode) => APP_ONLY_MODES.has(mode),
+    () => process.env.MS365_AUTH_MODE ?? "interactive",
+    (mode): string => mode,
   )
+
+const DELEGATED_MODES: ReadonlySet<string> = new Set<AuthMode>(["interactive", "oauth-proxy"])
+
+const currentToken = async (): Promise<string | undefined> => {
+  const contextToken = getContextToken()
+  if (contextToken) return contextToken
+  const token = await getAccessToken()
+  return token.fold(
+    (): string | undefined => undefined,
+    (value) => value,
+  )
+}
+
+/**
+ * Whether this server acts for a user or as an application. Client-secret and certificate are
+ * always app-only. client-token can be handed either kind of token, so it goes by the token's
+ * claims, and is "unknown" when they cannot be read: personal-account tokens are opaque, so that
+ * case keeps /me, but an empty allowlist then refuses rather than opens. An unrecognised mode
+ * is treated as app-only.
+ */
+export const signInKind = async (): Promise<TokenKind> => {
+  const mode = configuredMode()
+  if (DELEGATED_MODES.has(mode)) return "delegated"
+  if (mode !== "client-token") return "app-only"
+  const token = await currentToken()
+  return token === undefined ? "unknown" : parseJwtKind(token)
+}
 
 const requiresMailbox = () =>
   new UserError(
-    "This server signs in as an application (client secret or certificate), which has no mailbox of its own. " +
+    "This server signs in as an application, which has no mailbox of its own. " +
       "Pass mailbox with the address of the mailbox to act on.",
   )
 
@@ -171,10 +204,10 @@ export const resolveMailbox = async (
   mailbox: string | undefined,
   client: IdentityClient,
 ): Promise<Either<UserError, MailboxScope>> => {
-  const appOnly = isAppOnlyAuth()
+  const kind = await signInKind()
   const named = mailbox !== undefined && normalize(mailbox).length > 0
-  const own = named && !appOnly ? await lookupOwnAddresses(client) : NO_ADDRESSES
-  return resolveMailboxScope(mailbox, resolveAllowedMailboxes(), appOnly, own)
+  const own = named && kind !== "app-only" ? await lookupOwnAddresses(client) : NO_ADDRESSES
+  return resolveMailboxScope(mailbox, resolveAllowedMailboxes(), kind, own)
 }
 
 /**
@@ -184,13 +217,15 @@ export const resolveMailbox = async (
  * Omitting the mailbox yields /me, so every existing delegated caller keeps its behaviour
  * and no configuration is needed to stay on the current path. App-only deployments have
  * no /me, so there omitting it is refused here instead of surfacing as a Graph error.
+ * Named mailboxes follow the table at the top of this file.
  */
 export const resolveMailboxScope = (
   mailbox: string | undefined,
   allowed: ReadonlySet<string> = resolveAllowedMailboxes(),
-  appOnly: boolean = isAppOnlyAuth(),
+  kind: TokenKind = "delegated",
   ownAddresses: ReadonlySet<string> = NO_ADDRESSES,
 ): Either<UserError, MailboxScope> => {
+  const appOnly = kind === "app-only"
   if (mailbox === undefined) return appOnly ? Left(requiresMailbox()) : Right(OWN_MAILBOX)
 
   // Blank is refused rather than read as "my own mailbox": a caller that meant to name a
@@ -205,7 +240,8 @@ export const resolveMailboxScope = (
 
   if (!appOnly && ownAddresses.has(normalized)) return Right(OWN_MAILBOX)
 
-  if (!allowed.has(normalized)) {
+  const unrestricted = kind === "delegated" && allowed.size === 0
+  if (!unrestricted && !allowed.has(normalized)) {
     // The configured addresses are not listed: on a shared deployment, anyone who
     // mistyped an address would otherwise learn every mailbox the server can reach.
     // Naming the setting is enough for an operator, who can read it.

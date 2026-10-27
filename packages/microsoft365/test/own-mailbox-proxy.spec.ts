@@ -36,7 +36,7 @@ const prefix = async (token: string, mailbox: string) =>
 beforeEach(() => {
   vi.clearAllMocks()
   clearOwnAddressCache()
-  vi.stubEnv("MS365_ALLOWED_MAILBOXES", "")
+  vi.stubEnv("MS365_ALLOWED_MAILBOXES", "someone-else@example.com")
   vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "0")
   vi.stubGlobal("fetch", fetchSpy)
 })

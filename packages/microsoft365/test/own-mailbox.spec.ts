@@ -28,7 +28,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   clearOwnAddressCache()
   clearMessageRefs()
-  vi.stubEnv("MS365_ALLOWED_MAILBOXES", "")
+  vi.stubEnv("MS365_ALLOWED_MAILBOXES", "someone-else@example.com")
   vi.mocked(getAuthMode).mockReturnValue(Some("interactive"))
   vi.mocked(getAccessToken).mockResolvedValue(Right("token-1"))
   client.request.mockResolvedValue(Right(ME))
@@ -51,7 +51,7 @@ describe("ownAddressesOf", () => {
 
 describe("naming your own mailbox", () => {
   it.each(["jake@example.com", "Jake@Corp.Example.com", "JG@EXAMPLE.COM"])(
-    "routes %s to /me with an empty allowlist",
+    "routes %s to /me without being listed",
     async (mailbox) => {
       const scope = await resolveMailbox(mailbox, client)
 

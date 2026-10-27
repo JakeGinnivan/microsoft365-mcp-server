@@ -257,3 +257,53 @@ describe.each(["client-token", "oauth-proxy"])("%s draft attachment relay", (mod
     },
   )
 })
+
+// The hosted server (httpStream + oauth-proxy) never runs setupAuth, so the mailbox rule must read
+// its mode from MS365_AUTH_MODE. Driven through the registered tool with a session token, the way
+// a request over HTTP reaches it.
+describe("oauth-proxy mailbox allowlist", () => {
+  const graph = (value: unknown) => new Response(JSON.stringify(value), { status: 200 })
+  const listMessages = () => server.addTool.mock.calls.find(([tool]) => tool.name === "list_messages")?.[0]
+  const call = (mailbox: string) =>
+    listMessages()
+      .execute({ mailbox }, { session: { accessToken: "USER.TOKEN" } })
+      .then(
+        () => "ok",
+        (error: Error) => error.message,
+      )
+  const mailPaths = (fetchSpy: ReturnType<typeof vi.fn>) =>
+    fetchSpy.mock.calls.map(([url]) => new URL(String(url)).pathname).filter((path) => path.includes("/messages"))
+
+  beforeEach(() => {
+    vi.stubEnv("MS365_AUTH_MODE", "oauth-proxy")
+    vi.stubEnv("MS365_GRAPH_MAX_RETRIES", "0")
+  })
+
+  it("reaches an unlisted mailbox when the list is empty", async () => {
+    vi.stubEnv("MS365_ALLOWED_MAILBOXES", "")
+    const fetchSpy = vi.fn(async (url: string) =>
+      graph(new URL(url).pathname.endsWith("/me") ? { mail: "jake@example.com" } : { value: [] }),
+    )
+    vi.stubGlobal("fetch", fetchSpy)
+    await import("../src/index")
+    await vi.waitFor(() => expect(server.start).toHaveBeenCalled())
+
+    expect(await call("shared@example.com")).toBe("ok")
+    expect(mailPaths(fetchSpy)).toEqual(["/v1.0/users/shared%40example.com/messages"])
+  })
+
+  it("refuses an unlisted mailbox when the list is set, and routes a listed one", async () => {
+    vi.stubEnv("MS365_ALLOWED_MAILBOXES", "shared@example.com")
+    const fetchSpy = vi.fn(async (url: string) =>
+      graph(new URL(url).pathname.endsWith("/me") ? { mail: "jake@example.com" } : { value: [] }),
+    )
+    vi.stubGlobal("fetch", fetchSpy)
+    await import("../src/index")
+    await vi.waitFor(() => expect(server.start).toHaveBeenCalled())
+
+    expect(await call("other@example.com")).toContain("is not permitted")
+    expect(mailPaths(fetchSpy)).toEqual([])
+    expect(await call("shared@example.com")).toBe("ok")
+    expect(mailPaths(fetchSpy)).toEqual(["/v1.0/users/shared%40example.com/messages"])
+  })
+})

@@ -25,3 +25,20 @@ export const parseJwtScopes = (token: string): ReadonlyArray<string> => {
   if (Array.isArray(roles)) return roles.filter((r): r is string => typeof r === "string")
   return []
 }
+
+export type TokenKind = "delegated" | "app-only" | "unknown"
+
+/**
+ * Whether a token acts for a user (`scp`) or as an application (`roles` with no `scp`). Anything
+ * that cannot be read, including opaque tokens, is "unknown" and left to the caller to treat
+ * conservatively.
+ */
+export const parseJwtKind = (token: string): TokenKind => {
+  const claims = decodePayload(token)
+  if (claims === null || typeof claims !== "object") return "unknown"
+  const { scp, roles } = claims as { scp?: unknown; roles?: unknown }
+
+  if (typeof scp === "string" && scp.trim().length > 0) return "delegated"
+  if (Array.isArray(roles)) return "app-only"
+  return "unknown"
+}

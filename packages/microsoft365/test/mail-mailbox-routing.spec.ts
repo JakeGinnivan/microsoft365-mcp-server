@@ -3,13 +3,13 @@
 // with, and that an unpermitted mailbox never reaches Graph at all.
 
 import { None, Some } from "functype"
-import { Right } from "functype/either"
+import { Left, Right } from "functype/either"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
-vi.mock("../src/auth/auth-manager", () => ({ getAuthMode: vi.fn() }))
+vi.mock("../src/auth/auth-manager", () => ({ getAuthMode: vi.fn(), getAccessToken: vi.fn() }))
 
-import { getAuthMode } from "../src/auth/auth-manager"
+import { getAccessToken, getAuthMode } from "../src/auth/auth-manager"
 import { getGraphClient } from "../src/client/graph-client"
 import {
   batchMoveMessages,
@@ -26,6 +26,11 @@ import { clearMessageRefs } from "../src/utils/message-refs"
 const BEL = "bel@example.com"
 const BEL_PREFIX = "/users/bel%40example.com"
 
+const jwt = (claims: object) =>
+  ["{}", JSON.stringify(claims), ""].map((part) => Buffer.from(part).toString("base64url")).join(".")
+const USER_TOKEN = jwt({ scp: "Mail.ReadWrite" })
+const APP_TOKEN = jwt({ roles: ["Mail.ReadWrite"] })
+
 const message = { id: "m1", subject: "Hello", from: { emailAddress: { address: "a@b.c" } } }
 
 const mockClient = {
@@ -39,6 +44,7 @@ const mockClient = {
   searchMessages: vi.fn(),
   sendReply: vi.fn(),
   requestPaginated: vi.fn(),
+  request: vi.fn(),
 }
 
 beforeEach(() => {
@@ -47,6 +53,7 @@ beforeEach(() => {
   process.env.MS365_ALLOWED_MAILBOXES = BEL
   vi.mocked(getGraphClient).mockReturnValue(Some(mockClient as never))
   vi.mocked(getAuthMode).mockReturnValue(None())
+  vi.mocked(getAccessToken).mockResolvedValue(Right(USER_TOKEN))
 
   mockClient.listMessages.mockResolvedValue(Right({ value: [message] }))
   mockClient.listAllMessages.mockResolvedValue(Right([message]))
@@ -58,6 +65,8 @@ beforeEach(() => {
   mockClient.searchMessages.mockResolvedValue(Right({ value: [message] }))
   mockClient.sendReply.mockResolvedValue(Right({}))
   mockClient.requestPaginated.mockResolvedValue(Right([message]))
+  // The own-address lookup; none of these tests names the caller's own address.
+  mockClient.request.mockResolvedValue(Left({ type: "api", message: "not under test" }))
 })
 
 afterEach(() => {
@@ -199,6 +208,81 @@ describe("app-only auth", () => {
     vi.mocked(getAuthMode).mockReturnValue(Some(mode))
     await listMessages({})
     expect(prefixOf(mockClient.listMessages)).toBe("/me")
+  })
+
+  it("treats a client-token holding an app token as app-only", async () => {
+    vi.mocked(getAuthMode).mockReturnValue(Some("client-token"))
+    vi.mocked(getAccessToken).mockResolvedValue(Right(APP_TOKEN))
+
+    const result = await listMessages({})
+
+    expect((result.value as { message: string }).message).toContain("Pass mailbox")
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+})
+
+// MS365_ALLOWED_MAILBOXES means different things by who the server signs in as. Signed in as a
+// user, Graph already limits them to what they were granted, so an empty list narrows nothing.
+// Signed in as an application, the list is the server's only limit, so an empty one reaches
+// nothing. A set list applies the same way in both.
+describe("allowlist by sign-in mode", () => {
+  const OTHER = "other@example.com"
+  const reach = async (mailbox: string) => {
+    mockClient.listMessages.mockClear()
+    const result = await listMessages({ mailbox })
+    return result.isLeft() ? "refused" : prefixOf(mockClient.listMessages)
+  }
+
+  describe.each([
+    ["interactive", USER_TOKEN],
+    ["oauth-proxy", USER_TOKEN],
+    ["client-token", USER_TOKEN],
+  ] as const)("signed in as a user (%s)", (mode, token) => {
+    beforeEach(() => {
+      vi.mocked(getAuthMode).mockReturnValue(Some(mode))
+      vi.mocked(getAccessToken).mockResolvedValue(Right(token))
+    })
+
+    it("reaches any mailbox when the list is empty", async () => {
+      delete process.env.MS365_ALLOWED_MAILBOXES
+      expect(await reach(OTHER)).toBe("/users/other%40example.com")
+    })
+
+    it("reaches only listed mailboxes when the list is set", async () => {
+      expect(await reach(BEL)).toBe(BEL_PREFIX)
+      expect(await reach(OTHER)).toBe("refused")
+    })
+  })
+
+  // The hosted server never runs setupAuth, so the mode comes from MS365_AUTH_MODE alone.
+  it("reads oauth-proxy from MS365_AUTH_MODE when auth was never set up", async () => {
+    vi.stubEnv("MS365_AUTH_MODE", "oauth-proxy")
+    delete process.env.MS365_ALLOWED_MAILBOXES
+    expect(await reach(OTHER)).toBe("/users/other%40example.com")
+    vi.unstubAllEnvs()
+  })
+
+  describe.each([
+    ["client-secret", APP_TOKEN],
+    ["certificate", APP_TOKEN],
+    ["client-token", APP_TOKEN],
+    ["client-token", "opaque-token"],
+  ] as const)("signed in as an application, or unknown (%s, %s)", (mode, token) => {
+    beforeEach(() => {
+      vi.mocked(getAuthMode).mockReturnValue(Some(mode))
+      vi.mocked(getAccessToken).mockResolvedValue(Right(token))
+    })
+
+    it("refuses every mailbox when the list is empty", async () => {
+      delete process.env.MS365_ALLOWED_MAILBOXES
+      expect(await reach(BEL)).toBe("refused")
+      expect(await reach(OTHER)).toBe("refused")
+    })
+
+    it("reaches only listed mailboxes when the list is set", async () => {
+      expect(await reach(BEL)).toBe(BEL_PREFIX)
+      expect(await reach(OTHER)).toBe("refused")
+    })
   })
 })
 
