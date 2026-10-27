@@ -244,3 +244,57 @@ describe("graph-client AuthStrategy injection", () => {
     })
   })
 })
+
+// Graph does not echo the request's mailbox segment back verbatim. A live delegated scan of
+// /users/{address with %40}/... returned next links with a literal "@", and a folder scan's link
+// in OData key form, mailFolders('inbox'). These are those shapes with the address swapped.
+describe("nextMessageScanPage in another mailbox", () => {
+  const PREFIX = "/users/jake%40example.com"
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const followWith = async (nextLink: string) => {
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: [] }), { headers: { "Content-Type": "application/json" } })),
+    )
+    vi.stubGlobal("fetch", fetchSpy)
+    const client = initializeGraphClient({ getAccessToken: () => Promise.resolve(Right("TOKEN")) })
+    return { result: await client.nextMessageScanPage(nextLink, PREFIX), fetchSpy }
+  }
+
+  it.each([
+    "https://graph.microsoft.com/v1.0/users/jake@example.com/mailFolders('inbox')/messages?%24select=id%2creceivedDateTime&%24filter=receivedDateTime+ge+2026-01-01T00%3a00%3a00Z&%24orderby=receivedDateTime+desc&%24top=2&%24skip=4",
+    "https://graph.microsoft.com/v1.0/users/jake@example.com/messages?%24select=id&%24filter=receivedDateTime+ge+2026-10-01T00%3a00%3a00Z&%24orderby=receivedDateTime+desc&%24top=2&%24skip=2",
+  ])("follows the link Graph returned for a %%40-encoded scan: %s", async (nextLink) => {
+    const { result, fetchSpy } = await followWith(nextLink)
+
+    expect(result.isRight()).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(fetchSpy.mock.calls[0]![0]).toBe(nextLink)
+  })
+
+  it.each([
+    "https://graph.microsoft.com/v1.0/users/other@example.com/mailFolders('inbox')/messages?%24skip=4",
+    "https://graph.microsoft.com/v1.0/users/other%40example.com/messages?%24skip=2",
+    "https://graph.microsoft.com/v1.0/me/messages?%24skip=2",
+  ])("refuses a link naming a different mailbox: %s", async (nextLink) => {
+    const { result, fetchSpy } = await followWith(nextLink)
+
+    expect(result.isLeft()).toBe(true)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  // decodeURIComponent throws on a stray "%"; the link must be refused, not crash the scan.
+  it.each([
+    "https://graph.microsoft.com/v1.0/users/jake%40example.com%/messages?%24skip=2",
+    "https://graph.microsoft.com/v1.0/users('jake%zz')/messages?%24skip=2",
+  ])("refuses a link with a malformed escape instead of throwing: %s", async (nextLink) => {
+    const { result, fetchSpy } = await followWith(nextLink)
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toBe("Invalid Graph message continuation URL.")
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})

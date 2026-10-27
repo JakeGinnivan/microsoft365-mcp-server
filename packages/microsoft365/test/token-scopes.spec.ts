@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { parseJwtScopes } from "../src/auth/token-scopes"
+import { parseJwtKind, parseJwtScopes } from "../src/auth/token-scopes"
 
 const segment = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url")
 const token = (claims: unknown, signature = "sig"): string =>
@@ -37,5 +37,28 @@ describe("parseJwtScopes", () => {
     ["an empty string", ""],
   ])("returns no scopes for %s", (_label, value) => {
     expect(parseJwtScopes(value)).toEqual([])
+  })
+})
+
+// client-token mode can be handed either kind of token, and the mailbox allowlist differs by kind.
+describe("parseJwtKind", () => {
+  it("reads a token with scp as delegated", () => {
+    expect(parseJwtKind(token({ scp: "Mail.Read" }))).toBe("delegated")
+  })
+
+  it("reads a token with roles and no scp as app-only", () => {
+    expect(parseJwtKind(token({ roles: ["Mail.Read"] }))).toBe("app-only")
+  })
+
+  it("reads scp alongside roles as delegated", () => {
+    expect(parseJwtKind(token({ scp: "Mail.Read", roles: ["X"] }))).toBe("delegated")
+  })
+
+  it.each([
+    ["an opaque token", "EwBwA8l6BAAU"],
+    ["a token with neither claim", token({ sub: "x" })],
+    ["a token with an empty scp", token({ scp: " " })],
+  ])("cannot tell for %s", (_label, value) => {
+    expect(parseJwtKind(value)).toBe("unknown")
   })
 })

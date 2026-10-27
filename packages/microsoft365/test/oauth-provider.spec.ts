@@ -79,6 +79,19 @@ describe("oauth-provider key separation", () => {
       expect(resolveInteractiveScopes()).toContain("OnlineMeetingTranscript.Read.All")
     })
 
+    // The hosted sign-in reaches shared mailboxes only if it asks for the .Shared scope, which is
+    // not in the defaults; this is how a deployment turns it on.
+    it("asks for Mail.ReadWrite.Shared alongside other extra scopes", () => {
+      process.env.MS365_EXTRA_SCOPES = "Mail.ReadWrite.Shared, OnlineMeetingTranscript.Read.All"
+
+      expect(DEFAULT_INTERACTIVE_SCOPES).not.toContain("Mail.ReadWrite.Shared")
+      expect(resolveInteractiveScopes()).toEqual([
+        ...DEFAULT_INTERACTIVE_SCOPES,
+        "Mail.ReadWrite.Shared",
+        "OnlineMeetingTranscript.Read.All",
+      ])
+    })
+
     it("leaves the requested set untouched when unset", () => {
       expect(resolveInteractiveScopes()).toEqual([...DEFAULT_INTERACTIVE_SCOPES])
     })

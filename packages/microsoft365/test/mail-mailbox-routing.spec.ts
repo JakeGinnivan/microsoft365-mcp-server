@@ -1,0 +1,327 @@
+// The mailbox parameter is only useful if it reaches Graph on every mail path. These
+// tests assert the routing rather than the formatting: which prefix each call was made
+// with, and that an unpermitted mailbox never reaches Graph at all.
+
+import { None, Some } from "functype"
+import { Left, Right } from "functype/either"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("../src/client/graph-client", () => ({ getGraphClient: vi.fn() }))
+vi.mock("../src/auth/auth-manager", () => ({ getAuthMode: vi.fn(), getAccessToken: vi.fn() }))
+
+import { getAccessToken, getAuthMode } from "../src/auth/auth-manager"
+import { getGraphClient } from "../src/client/graph-client"
+import {
+  batchMoveMessages,
+  getMessage,
+  listAttachments,
+  listMessages,
+  moveMessage,
+  scanMessages,
+  searchMessages,
+  sendReply,
+} from "../src/tools/mail-tools"
+import { clearMessageRefs } from "../src/utils/message-refs"
+
+const BEL = "bel@example.com"
+const BEL_PREFIX = "/users/bel%40example.com"
+
+const jwt = (claims: object) =>
+  ["{}", JSON.stringify(claims), ""].map((part) => Buffer.from(part).toString("base64url")).join(".")
+const USER_TOKEN = jwt({ scp: "Mail.ReadWrite" })
+const APP_TOKEN = jwt({ roles: ["Mail.ReadWrite"] })
+
+const message = { id: "m1", subject: "Hello", from: { emailAddress: { address: "a@b.c" } } }
+
+const mockClient = {
+  listMessages: vi.fn(),
+  listAllMessages: vi.fn(),
+  nextMessageScanPage: vi.fn(),
+  getMessage: vi.fn(),
+  listMailFolders: vi.fn(),
+  moveMessage: vi.fn(),
+  listAttachments: vi.fn(),
+  searchMessages: vi.fn(),
+  sendReply: vi.fn(),
+  requestPaginated: vi.fn(),
+  request: vi.fn(),
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  clearMessageRefs()
+  process.env.MS365_ALLOWED_MAILBOXES = BEL
+  vi.mocked(getGraphClient).mockReturnValue(Some(mockClient as never))
+  vi.mocked(getAuthMode).mockReturnValue(None())
+  vi.mocked(getAccessToken).mockResolvedValue(Right(USER_TOKEN))
+
+  mockClient.listMessages.mockResolvedValue(Right({ value: [message] }))
+  mockClient.listAllMessages.mockResolvedValue(Right([message]))
+  mockClient.nextMessageScanPage.mockResolvedValue(Right({ value: [message] }))
+  mockClient.getMessage.mockResolvedValue(Right(message))
+  mockClient.listMailFolders.mockResolvedValue(Right({ value: [{ id: "f-receipts", displayName: "Receipts" }] }))
+  mockClient.moveMessage.mockResolvedValue(Right(message))
+  mockClient.listAttachments.mockResolvedValue(Right({ value: [] }))
+  mockClient.searchMessages.mockResolvedValue(Right({ value: [message] }))
+  mockClient.sendReply.mockResolvedValue(Right({}))
+  mockClient.requestPaginated.mockResolvedValue(Right([message]))
+  // The own-address lookup; none of these tests names the caller's own address.
+  mockClient.request.mockResolvedValue(Left({ type: "api", message: "not under test" }))
+})
+
+afterEach(() => {
+  delete process.env.MS365_ALLOWED_MAILBOXES
+})
+
+const prefixOf = (mock: { mock: { calls: unknown[][] } }) => {
+  const call = mock.mock.calls.at(-1)
+  if (!call) throw new Error("expected the client to have been called")
+  return call.at(-1)
+}
+
+describe("mailbox routing", () => {
+  it("addresses /me when no mailbox is given", async () => {
+    await listMessages({})
+    expect(prefixOf(mockClient.listMessages)).toBe("/me")
+  })
+
+  it("addresses /users/{mailbox} when one is given", async () => {
+    await listMessages({ mailbox: BEL })
+    expect(prefixOf(mockClient.listMessages)).toBe(BEL_PREFIX)
+  })
+
+  it("routes the paginated path too", async () => {
+    await listMessages({ mailbox: BEL, fetch_all_pages: true })
+    expect(prefixOf(mockClient.listAllMessages)).toBe(BEL_PREFIX)
+  })
+
+  it("routes get, search, attachments and reply", async () => {
+    await getMessage({ message_id: "m1", mailbox: BEL })
+    expect(prefixOf(mockClient.getMessage)).toBe(BEL_PREFIX)
+
+    await searchMessages({ query: "invoice", mailbox: BEL })
+    expect(prefixOf(mockClient.searchMessages)).toBe(BEL_PREFIX)
+
+    await listAttachments({ message_id: "m1", mailbox: BEL })
+    expect(prefixOf(mockClient.listAttachments)).toBe(BEL_PREFIX)
+
+    await sendReply({ message_id: "m1", comment: "ok", mailbox: BEL })
+    expect(prefixOf(mockClient.sendReply)).toBe(BEL_PREFIX)
+  })
+
+  // The subtle one: a folder display name resolves to an ID that only exists in one
+  // mailbox. Looking it up against /me and then moving in Bel's mailbox would target a
+  // folder that is missing there — or, worse, a different folder that happens to exist.
+  it("resolves a destination folder name in the mailbox being addressed", async () => {
+    await moveMessage({ message_id: "m1", destination: "Receipts", mailbox: BEL })
+
+    expect(prefixOf(mockClient.listMailFolders)).toBe(BEL_PREFIX)
+    expect(mockClient.moveMessage).toHaveBeenCalledWith("m1", "f-receipts", BEL_PREFIX)
+  })
+
+  it("resolves a scan folder in the mailbox being addressed", async () => {
+    await scanMessages({ folder: "Receipts", mailbox: BEL })
+
+    expect(prefixOf(mockClient.listMailFolders)).toBe(BEL_PREFIX)
+    expect(mockClient.listMessages).toHaveBeenCalledWith(expect.anything(), "f-receipts", BEL_PREFIX)
+  })
+
+  // A cursor's page is minted into refs for the mailbox it pages through, so continuing
+  // it under another mailbox would label those refs with the wrong one.
+  it("continues a scan cursor only in the mailbox that started it", async () => {
+    mockClient.listMessages.mockResolvedValue(
+      Right({ value: [message], "@odata.nextLink": "https://graph.microsoft.com/v1.0/users/bel/messages?$skip=1" }),
+    )
+    const first = await scanMessages({ mailbox: BEL })
+    const cursor = /cursor: "([^"]+)"/.exec(String(first.value))?.[1]
+    if (!cursor) throw new Error(`expected a cursor in: ${String(first.value)}`)
+    expect(String(first.value)).toContain(`mailbox: "${BEL}"`)
+
+    const elsewhere = await scanMessages({ cursor })
+    expect(elsewhere.isLeft()).toBe(true)
+    expect(mockClient.nextMessageScanPage).not.toHaveBeenCalled()
+
+    const same = await scanMessages({ cursor, mailbox: BEL })
+    expect(same.isRight()).toBe(true)
+    expect(prefixOf(mockClient.nextMessageScanPage)).toBe(BEL_PREFIX)
+  })
+
+  it("routes every message in a batch move", async () => {
+    await batchMoveMessages({ message_ids: ["m1", "m2"], destination: "archive", mailbox: BEL })
+
+    expect(mockClient.moveMessage).toHaveBeenCalledTimes(2)
+    for (const call of mockClient.moveMessage.mock.calls) expect(call.at(-1)).toBe(BEL_PREFIX)
+  })
+})
+
+describe("mailbox permission", () => {
+  it("refuses a mailbox that is not allowed, without calling Graph", async () => {
+    const result = await listMessages({ mailbox: "someone@example.com" })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+
+  it("refuses an empty mailbox without calling Graph", async () => {
+    const result = await listMessages({ mailbox: " " })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+
+  it("refuses a write to a mailbox that is not allowed", async () => {
+    const result = await moveMessage({ message_id: "m1", destination: "archive", mailbox: "someone@example.com" })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.moveMessage).not.toHaveBeenCalled()
+  })
+})
+
+// Every mail tool resolves its mailbox through the same scope, so checking a read and a
+// send is enough to show an app-only deployment refuses the missing /me up front.
+describe("app-only auth", () => {
+  beforeEach(() => {
+    vi.mocked(getAuthMode).mockReturnValue(Some("client-secret"))
+  })
+
+  it("refuses a read with no mailbox before calling Graph", async () => {
+    const result = await listMessages({})
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain("Pass mailbox")
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+
+  it("refuses a write with no mailbox before calling Graph", async () => {
+    const result = await sendReply({ message_id: "m1", comment: "ok" })
+
+    expect(result.isLeft()).toBe(true)
+    expect(mockClient.sendReply).not.toHaveBeenCalled()
+  })
+
+  it("routes a named mailbox as usual", async () => {
+    await listMessages({ mailbox: BEL })
+    expect(prefixOf(mockClient.listMessages)).toBe(BEL_PREFIX)
+  })
+
+  it.each(["interactive", "oauth-proxy", "client-token"] as const)("keeps the /me default in %s mode", async (mode) => {
+    vi.mocked(getAuthMode).mockReturnValue(Some(mode))
+    await listMessages({})
+    expect(prefixOf(mockClient.listMessages)).toBe("/me")
+  })
+
+  it("treats a client-token holding an app token as app-only", async () => {
+    vi.mocked(getAuthMode).mockReturnValue(Some("client-token"))
+    vi.mocked(getAccessToken).mockResolvedValue(Right(APP_TOKEN))
+
+    const result = await listMessages({})
+
+    expect((result.value as { message: string }).message).toContain("Pass mailbox")
+    expect(mockClient.listMessages).not.toHaveBeenCalled()
+  })
+})
+
+// MS365_ALLOWED_MAILBOXES means different things by who the server signs in as. Signed in as a
+// user, Graph already limits them to what they were granted, so an empty list narrows nothing.
+// Signed in as an application, the list is the server's only limit, so an empty one reaches
+// nothing. A set list applies the same way in both.
+describe("allowlist by sign-in mode", () => {
+  const OTHER = "other@example.com"
+  const reach = async (mailbox: string) => {
+    mockClient.listMessages.mockClear()
+    const result = await listMessages({ mailbox })
+    return result.isLeft() ? "refused" : prefixOf(mockClient.listMessages)
+  }
+
+  describe.each([
+    ["interactive", USER_TOKEN],
+    ["oauth-proxy", USER_TOKEN],
+    ["client-token", USER_TOKEN],
+  ] as const)("signed in as a user (%s)", (mode, token) => {
+    beforeEach(() => {
+      vi.mocked(getAuthMode).mockReturnValue(Some(mode))
+      vi.mocked(getAccessToken).mockResolvedValue(Right(token))
+    })
+
+    it("reaches any mailbox when the list is empty", async () => {
+      delete process.env.MS365_ALLOWED_MAILBOXES
+      expect(await reach(OTHER)).toBe("/users/other%40example.com")
+    })
+
+    it("reaches only listed mailboxes when the list is set", async () => {
+      expect(await reach(BEL)).toBe(BEL_PREFIX)
+      expect(await reach(OTHER)).toBe("refused")
+    })
+  })
+
+  // The hosted server never runs setupAuth, so the mode comes from MS365_AUTH_MODE alone.
+  it("reads oauth-proxy from MS365_AUTH_MODE when auth was never set up", async () => {
+    vi.stubEnv("MS365_AUTH_MODE", "oauth-proxy")
+    delete process.env.MS365_ALLOWED_MAILBOXES
+    expect(await reach(OTHER)).toBe("/users/other%40example.com")
+    vi.unstubAllEnvs()
+  })
+
+  describe.each([
+    ["client-secret", APP_TOKEN],
+    ["certificate", APP_TOKEN],
+    ["client-token", APP_TOKEN],
+    ["client-token", "opaque-token"],
+  ] as const)("signed in as an application, or unknown (%s, %s)", (mode, token) => {
+    beforeEach(() => {
+      vi.mocked(getAuthMode).mockReturnValue(Some(mode))
+      vi.mocked(getAccessToken).mockResolvedValue(Right(token))
+    })
+
+    it("refuses every mailbox when the list is empty", async () => {
+      delete process.env.MS365_ALLOWED_MAILBOXES
+      expect(await reach(BEL)).toBe("refused")
+      expect(await reach(OTHER)).toBe("refused")
+    })
+
+    it("reaches only listed mailboxes when the list is set", async () => {
+      expect(await reach(BEL)).toBe(BEL_PREFIX)
+      expect(await reach(OTHER)).toBe("refused")
+    })
+  })
+})
+
+const refFrom = (result: { value: unknown }): string => {
+  const ref = /([a-z0-9]{4}-\d+)\|/.exec(String(result.value))?.[1]
+  if (!ref) throw new Error(`expected a scan row in: ${String(result.value)}`)
+  return ref
+}
+
+describe("cross-mailbox refs", () => {
+  // Nothing about a ref tells the caller which mailbox it came from. Resolving one
+  // against the wrong mailbox would fetch an unrelated message.
+  it("refuses a ref minted in another mailbox", async () => {
+    const ref = refFrom(await scanMessages({ mailbox: BEL }))
+
+    const result = await getMessage({ message_id: ref })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as { message: string }).message).toContain(BEL)
+    expect(mockClient.getMessage).not.toHaveBeenCalled()
+  })
+
+  it("accepts the ref when the same mailbox is addressed", async () => {
+    const ref = refFrom(await scanMessages({ mailbox: BEL }))
+
+    const result = await getMessage({ message_id: ref, mailbox: BEL })
+
+    expect(result.isRight()).toBe(true)
+    expect(mockClient.getMessage).toHaveBeenCalledWith("m1", undefined, BEL_PREFIX)
+  })
+
+  it("reports a stale ref in a batch move as one failed row, not a failed batch", async () => {
+    const ref = refFrom(await scanMessages({ mailbox: BEL }))
+
+    const result = await batchMoveMessages({ message_ids: [ref, "m2"], destination: "archive" })
+
+    expect(result.isRight()).toBe(true)
+    expect(result.value as string).toContain("FAILED")
+    expect(result.value as string).toContain(BEL)
+    expect(mockClient.moveMessage).toHaveBeenCalledTimes(1)
+  })
+})
