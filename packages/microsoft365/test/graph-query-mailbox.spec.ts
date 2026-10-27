@@ -120,13 +120,18 @@ describe("graph_query mailbox check", () => {
     expect(mockClient.graphQuery).not.toHaveBeenCalled()
   })
 
-  // A relative URL starting "//" would parse as protocol-relative, with "users" as the host.
-  // Graph treats it as a path, so it has to be checked as one.
+  // A relative URL starting "//" (after any whitespace) parses as protocol-relative, with "users"
+  // as the host, while Graph reads it as a path. Where it lands cannot be told, so it is refused.
   it.each([
     "//users/other@example.com/messages",
     "\\\\users\\other@example.com\\messages",
     "///users/other@example.com/events",
-  ])("refuses a $batch sub-request whose URL starts with repeated slashes: %s", async (url) => {
+    " //users/other@example.com/messages",
+    "\t//users/other@example.com/messages",
+    "/\t/users/other@example.com/messages",
+    "https:////users/other@example.com/messages",
+    "users:/other@example.com/messages",
+  ])("refuses a $batch sub-request whose URL does not resolve to Graph: %j", async (url) => {
     const body = JSON.stringify({ requests: [{ id: "1", method: "GET", url }] })
 
     const result = await graphQuery({ method: "POST", path: "/$batch", body })
@@ -175,11 +180,25 @@ describe("mailboxOfUrl", () => {
     ["https://graph.microsoft.com/v1.0/users/a@example.com/Manager", undefined],
     ["https://graph.microsoft.com/v1.0/me/messages", undefined],
     ["https://graph.microsoft.com/v1.0//users/a@example.com/messages", "a@example.com"],
-    ["//users/a@example.com/messages", "a@example.com"],
-    ["///users/a@example.com/messages", "a@example.com"],
-    ["\\\\users\\a@example.com\\messages", "a@example.com"],
-    ["//me/messages", undefined],
+    ["//graph.microsoft.com/v1.0/users/a@example.com/messages", "a@example.com"],
   ])("%s -> %s", (url, expected) => {
     expect(mailboxOfUrl(url)).toBe(expected)
+  })
+
+  // Protocol-relative and foreign-host forms cannot be placed, so they come back whole and fail the
+  // check instead of skipping it.
+  it.each([
+    "//users/a@example.com/messages",
+    "///users/a@example.com/messages",
+    " //users/a@example.com/messages",
+    "\t//users/a@example.com/messages",
+    "/\t/users/a@example.com/messages",
+    "\\\\users\\a@example.com\\messages",
+    "https:////users/a@example.com/messages",
+    "users:/a@example.com/messages",
+    "https://evil.example/v1.0/users/a@example.com/messages",
+    "//me/messages",
+  ])("treats %j as an unknown mailbox", (url) => {
+    expect(mailboxOfUrl(url)).toBe(url)
   })
 })
