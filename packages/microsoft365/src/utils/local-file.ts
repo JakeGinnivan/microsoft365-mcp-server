@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { link, mkdir, rm, writeFile } from "node:fs/promises"
-import { basename, extname, join, resolve } from "node:path"
+import { basename, dirname, extname, join, resolve } from "node:path"
 
 import type { Either } from "functype/either"
 import { Left, Right } from "functype/either"
@@ -61,7 +61,8 @@ export const writeNewFile = async (
   const target = join(dir, name)
   // join() on a sanitised name cannot escape dir, but assert it rather than trust the reasoning:
   // save_attachment's names come from whoever sent the email.
-  if (!resolve(target).startsWith(resolve(dir))) return Left(new Error(`Refusing to write outside ${dir}.`))
+  // A prefix test would pass "/out" for "/outside/x", so the parent folder is compared exactly.
+  if (dirname(resolve(target)) !== resolve(dir)) return Left(new Error(`Refusing to write outside ${dir}.`))
 
   const temp = join(dir, `.${name}.${randomUUID()}.tmp`)
   try {

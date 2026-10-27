@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { writeNewFile } from "../src/utils/local-file"
 
@@ -63,6 +63,22 @@ describe("writeNewFile", () => {
 
   it("refuses a name that resolves outside the folder", async () => {
     const result = await writeNewFile(dir, "../escape.txt", "x")
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain("Refusing to write outside")
+  })
+
+  it("refuses a sibling folder that shares the folder's name as a prefix", async () => {
+    const sibling = `${dir}x`
+    const result = await writeNewFile(dir, `/../${basename(sibling)}/escape.txt`, "x")
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain("Refusing to write outside")
+    await expect(stat(sibling)).rejects.toThrow()
+  })
+
+  it("refuses a name inside a subfolder", async () => {
+    const result = await writeNewFile(dir, "sub/a.txt", "x")
 
     expect(result.isLeft()).toBe(true)
     expect((result.value as Error).message).toContain("Refusing to write outside")
