@@ -28,6 +28,12 @@ jobs:
       - name: Run CI Pipeline
         run: pnpm run validate
 
+      # server.json carries the version into the MCP Registry. prepublishOnly checks it
+      # too, but that fires on the tag, where a failure has already cut a GitHub Release.
+      - name: Check server.json is in step with package.json
+        working-directory: packages/microsoft365
+        run: node scripts/sync-server-json.mjs --check
+
       # Installs the packed artifact with plain npm, outside the workspace. validate cannot catch a
       # manifest npm cannot install: every check it runs resolves dependencies through pnpm.
       - name: Check the package installs from npm

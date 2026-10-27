@@ -62,7 +62,10 @@ describe("attachFileToDraft", () => {
     const result = await attachFileToDraft(apiBase, "msg", "tok", Buffer.from("x"), "x.txt", "text/plain")
 
     expect(result.isLeft()).toBe(true)
-    expect(result.value).toMatchObject({ status: 409 })
+    expect(result.value).toMatchObject({
+      status: 409,
+      message: "This message is not a draft. Attachments can only be added to drafts.",
+    })
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 

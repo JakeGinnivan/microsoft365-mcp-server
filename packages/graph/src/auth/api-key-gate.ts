@@ -13,8 +13,8 @@ export const authorizesWithApiKey = (bearer: string | undefined, apiKey: string)
   return resolved === apiKey
 }
 
-// http.IncomingMessage.url is path-relative ("/mcp?api_key=…"); a Hono Request carries an
-// absolute URL. A dummy base parses both. Never used for anything but reading the query.
+// A web Request carries an absolute URL; a dummy base also parses a path-relative one
+// ("/mcp?api_key=…"). Never used for anything but reading the query.
 const QUERY_BASE = "http://request.invalid"
 
 const queryParam = (request: unknown, name: string): string | undefined => {
