@@ -77,6 +77,8 @@ describe("read_document mailbox check", () => {
     `/users/other@example.com/events/e1/attachments/att-1/$value`,
     `/users(userPrincipalName='other@example.com')/${ATTACHMENT}`,
     `/users%2Fother%40example.com/messages/x%zz/attachments/att-1/$value`,
+    `//users/other@example.com/${ATTACHMENT}`,
+    `///users/other%40example.com/${ATTACHMENT}`,
   ])("refuses a mailbox that is not allowed, before any request: %s", async (path) => {
     const result = await readDocument({ path })
 

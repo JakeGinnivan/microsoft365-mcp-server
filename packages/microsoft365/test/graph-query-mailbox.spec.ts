@@ -68,6 +68,10 @@ describe("graph_query mailbox check", () => {
     "/users/other@example.com/inferenceClassification/overrides",
     "/users/other@example.com/somethingGraphAddsLater",
     "/users/abc-guid-1234/messages",
+    // Graph reads an empty segment as nothing, so "//users/x" reaches /users/x.
+    "//users/other@example.com/messages",
+    "///users/other@example.com/messages",
+    "/me/..//users/other@example.com/messages",
   ])("refuses a mailbox that is not allowed, before any request: %s", async (path) => {
     const result = await get(path)
 
@@ -116,6 +120,22 @@ describe("graph_query mailbox check", () => {
     expect(mockClient.graphQuery).not.toHaveBeenCalled()
   })
 
+  // A relative URL starting "//" would parse as protocol-relative, with "users" as the host.
+  // Graph treats it as a path, so it has to be checked as one.
+  it.each([
+    "//users/other@example.com/messages",
+    "\\\\users\\other@example.com\\messages",
+    "///users/other@example.com/events",
+  ])("refuses a $batch sub-request whose URL starts with repeated slashes: %s", async (url) => {
+    const body = JSON.stringify({ requests: [{ id: "1", method: "GET", url }] })
+
+    const result = await graphQuery({ method: "POST", path: "/$batch", body })
+
+    expect(result.isLeft()).toBe(true)
+    expect((result.value as Error).message).toContain(REFUSAL)
+    expect(mockClient.graphQuery).not.toHaveBeenCalled()
+  })
+
   it("sends a $batch whose sub-requests are all allowed", async () => {
     const body = JSON.stringify({
       requests: [
@@ -154,6 +174,11 @@ describe("mailboxOfUrl", () => {
     ["users/a@example.com/events", "a@example.com"],
     ["https://graph.microsoft.com/v1.0/users/a@example.com/Manager", undefined],
     ["https://graph.microsoft.com/v1.0/me/messages", undefined],
+    ["https://graph.microsoft.com/v1.0//users/a@example.com/messages", "a@example.com"],
+    ["//users/a@example.com/messages", "a@example.com"],
+    ["///users/a@example.com/messages", "a@example.com"],
+    ["\\\\users\\a@example.com\\messages", "a@example.com"],
+    ["//me/messages", undefined],
   ])("%s -> %s", (url, expected) => {
     expect(mailboxOfUrl(url)).toBe(expected)
   })

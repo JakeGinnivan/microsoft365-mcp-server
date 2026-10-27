@@ -50,6 +50,12 @@ const usersSegmentAt = (segments: ReadonlyArray<string>, at: number): UsersHit |
   return undefined
 }
 
+// A relative URL starting "//" (or "\\", which the URL parser reads the same way) would parse as
+// protocol-relative, with the next segment as the host: "//users/x/messages" becomes host
+// "users". Graph treats it as a path, so it is read as one.
+const HAS_SCHEME = /^[a-z][a-z\d+.-]*:/i
+const asPath = (url: string): string => (HAS_SCHEME.test(url) ? url : url.replace(/^[/\\]+/, "/"))
+
 /**
  * The mailbox address a Graph URL reaches under /users/{address}/... or /users('{address}')/...,
  * or undefined when it reaches none: /me, /drives, /sites, a directory read about a user.
@@ -62,11 +68,14 @@ const usersSegmentAt = (segments: ReadonlyArray<string>, at: number): UsersHit |
  * ".." can climb out of the version root into another version.
  */
 export const mailboxOfUrl = (url: string, base: string = `${GRAPH_API_BASE}/v1.0/`): string | undefined => {
-  const pathname = URL.canParse(url, base) ? new URL(url, base).pathname : url.split(/[?#]/)[0]!
+  const path = asPath(url)
+  const pathname = URL.canParse(path, base) ? new URL(path, base).pathname : path.split(/[?#]/)[0]!
+  // Graph reads an empty segment as nothing, so "/v1.0//users/x" reaches /users/x. Dropping
+  // them keeps the users segment where the [0, 1] check looks for it.
   const segments = pathname
     .split(/\/|%2f/i)
-    .slice(1)
     .map(safeDecode)
+    .filter((segment) => segment.trim() !== "")
   const hit = [0, 1].map((at) => usersSegmentAt(segments, at)).find((found) => found !== undefined)
   if (hit === undefined) return undefined
   const resource = fold(hit.resource ?? "")
