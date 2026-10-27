@@ -1,6 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, extname, isAbsolute, join, resolve } from "node:path"
+import { extname, isAbsolute, join, resolve } from "node:path"
 
 import { formatBytes, resilientFetch } from "@sapientsai/ms-graph-core"
 import { UserError } from "fastmcp"
@@ -12,6 +11,7 @@ import { GRAPH_API_BASE } from "../auth/scopes"
 import { getGraphClient } from "../client/graph-client"
 import { defaultVersion } from "../client/graph-version"
 import type { GraphAttachment } from "../types"
+import { writeNewFile } from "../utils/local-file"
 import { resolveMessageIdOrRef } from "../utils/message-refs"
 
 const requireClient = () => {
@@ -42,7 +42,7 @@ const ITEM_ATTACHMENT = "#microsoft.graph.itemAttachment"
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
 
 // Most filesystems cap a name at 255 bytes, not characters. This leaves room for the " (99)" that
-// writeWithoutOverwriting may add.
+// writeNewFile may add.
 const MAX_NAME_BYTES = 200
 const MAX_EXTENSION_BYTES = 16
 
@@ -83,31 +83,9 @@ const safeName = (attachment: GraphAttachment): string => {
   return `${truncateToBytes(allowedStem, MAX_NAME_BYTES - Buffer.byteLength(extension))}${extension}`
 }
 
-const MAX_NAME_ATTEMPTS = 100
-
-// "wx" fails rather than replacing an existing file, so saving never destroys anything already on
-// disk — including an earlier save of a same-named attachment from another message. That is what
-// lets this tool be advertised as additive.
-const numbered = (target: string, attempt: number): string => {
-  if (attempt === 0) return target
-  const ext = extname(target)
-  return join(resolve(target, ".."), `${basename(target, ext)} (${attempt})${ext}`)
-}
-
-const writeWithoutOverwriting = async (target: string, data: Buffer, attempt = 0): Promise<Either<Error, string>> => {
-  if (attempt >= MAX_NAME_ATTEMPTS) {
-    return Left(new Error(`${MAX_NAME_ATTEMPTS} files named like ${basename(target)} already exist`))
-  }
-  const candidate = numbered(target, attempt)
-  try {
-    // The default folder is tmpdir(), which other users on the machine can list.
-    await writeFile(candidate, data, { flag: "wx", mode: 0o600 })
-    return Right(candidate)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") return writeWithoutOverwriting(target, data, attempt + 1)
-    return Left(err instanceof Error ? err : new Error(String(err)))
-  }
-}
+// Up to "name (99).ext": saving is additive, so a same-named attachment from another message gets a
+// numbered name instead of replacing the earlier save.
+const MAX_NAMES = 100
 
 const httpError = async (response: Response): Promise<UserError> => {
   if (response.headers.get("content-type")?.includes("application/json")) {
@@ -193,19 +171,9 @@ export const saveAttachment = async (params: {
 
   const dir = params.out_dir ? (isAbsolute(params.out_dir) ? params.out_dir : resolve(params.out_dir)) : tmpdir()
   const filename = safeName(chosen)
-  const target = join(dir, filename)
 
-  // join() on a sanitised filename cannot escape dir, but assert it rather than trust the reasoning —
-  // this is the one place in the server where remote input names a write path.
-  if (!resolve(target).startsWith(resolve(dir))) {
-    return Left(new UserError(`Refusing to write outside ${dir}.`))
-  }
-
-  const written = await mkdir(dir, { recursive: true }).then(
-    () => writeWithoutOverwriting(target, buffer),
-    (err: unknown) => Left<Error, string>(err instanceof Error ? err : new Error(String(err))),
-  )
-  if (written.isLeft()) return Left(new UserError(`Failed to write ${target}: ${written.value.message}`))
+  const written = await writeNewFile(dir, filename, buffer, MAX_NAMES)
+  if (written.isLeft()) return Left(new UserError(`Failed to write ${join(dir, filename)}: ${written.value.message}`))
   const saved = written.value
 
   const type =
