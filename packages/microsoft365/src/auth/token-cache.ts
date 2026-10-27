@@ -144,18 +144,28 @@ export const createFileCachePlugin = (name: string, directory = resolveCacheDire
       const contents = readCache(path)
       if (contents) {
         // Left in place, a corrupt cache would be re-read and rejected on every access
-        // without ever being replaced, so it is removed and treated as empty.
+        // without ever being replaced, so it is removed and treated as empty. MSAL keeps
+        // the rejected text in memory, and serialize() would throw on it until reset, so
+        // the in-memory cache is emptied too.
         try {
           context.tokenCache.deserialize(contents)
         } catch (error) {
           console.error(`[Auth] Discarding unreadable token cache at ${path}: ${messageOf(error)}`)
           discard(path)
+          context.tokenCache.deserialize("")
         }
       }
       return Promise.resolve()
     },
     afterCacheAccess: (context) => {
-      if (context.cacheHasChanged) writeCache(path, context.tokenCache.serialize())
+      if (!context.cacheHasChanged) return Promise.resolve()
+      // A throw here would fail the sign-in that produced the tokens. Like a failed write,
+      // a cache that cannot be serialized degrades to in-memory.
+      try {
+        writeCache(path, context.tokenCache.serialize())
+      } catch (error) {
+        console.error(`[Auth] Could not serialize token cache for ${path}: ${messageOf(error)}`)
+      }
       return Promise.resolve()
     },
   }

@@ -218,14 +218,17 @@ describe("token cache", () => {
       const path = join(directory, findCacheFile(directory))
 
       const reader = cacheContext("")
-      reader.deserialize.mockImplementation(() => {
-        throw new SyntaxError("Unexpected token n in JSON")
+      // Like MSAL, this rejects the corrupt text but accepts an empty cache.
+      reader.deserialize.mockImplementation((contents: string) => {
+        if (contents) throw new SyntaxError("Unexpected token n in JSON")
       })
       const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
 
       await expect(plugin.beforeCacheAccess(reader.context)).resolves.toBeUndefined()
       expect(existsSync(path)).toBe(false)
       expect(log).toHaveBeenCalledWith(expect.stringContaining("Discarding unreadable token cache"))
+      // MSAL keeps the rejected text in memory, so the plugin has to reset it.
+      expect(reader.deserialize).toHaveBeenLastCalledWith("")
     })
 
     it("degrades to in-memory when the cache cannot be written", async () => {
