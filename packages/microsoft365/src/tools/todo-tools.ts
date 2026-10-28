@@ -190,6 +190,18 @@ export const updateTodoTask = async (params: {
     return Left(new UserError("Pass either recurrence or clear_recurrence, not both."))
   }
 
+  // On a repeating task both dates set where the series starts, so two different
+  // ones leave no right answer. Refuse rather than let one silently win.
+  const startDate = params.recurrence?.start_date
+  if (params.due_date && startDate && toDateOnly(params.due_date) !== toDateOnly(startDate)) {
+    return Left(
+      new UserError(
+        `due_date (${toDateOnly(params.due_date)}) and recurrence.start_date (${toDateOnly(startDate)}) differ. ` +
+          "On a repeating task both set when it starts, so pass one, or the same date in both.",
+      ),
+    )
+  }
+
   const updates: Record<string, unknown> = {}
   if (params.title) updates.title = params.title
   if (params.status) updates.status = params.status
@@ -222,7 +234,19 @@ export const updateTodoTask = async (params: {
       }
       const { recurrence } = existing.value as GraphTodoTask
       if (recurrence) {
-        updates.recurrence = { ...recurrence, range: { ...recurrence.range, startDate: toDateOnly(params.due_date) } }
+        const newStart = toDateOnly(params.due_date)
+        // Graph echoes an endDate of 0001-01-01 on noEnd ranges, so only an endDate
+        // range has an end worth checking.
+        const { range } = recurrence
+        if (range.type === "endDate" && range.endDate !== undefined && range.endDate < newStart) {
+          return Left(
+            new UserError(
+              `This task stops repeating on ${range.endDate}, before ${newStart}. Pass recurrence with a later ` +
+                "end_date to move it, or clear_recurrence to make it one-off.",
+            ),
+          )
+        }
+        updates.recurrence = { ...recurrence, range: { ...range, startDate: newStart } }
       } else {
         updates.dueDateTime = { dateTime: params.due_date, timeZone: "UTC" }
       }
@@ -235,9 +259,10 @@ export const updateTodoTask = async (params: {
   return result
     .mapLeft((error) => new UserError(`Failed to update task: ${error.message}`))
     .map((t) => {
-      const summary = [describeUpdate(params.status, t), describeReschedule(params.due_date, updates, t)]
-        .filter((line) => line !== "")
-        .join(" ")
+      // Completing a repeating task already reports the next occurrence, so a
+      // second sentence about where the move landed could only contradict it.
+      const reschedule = params.status === "completed" ? "" : describeReschedule(params.due_date, updates, t)
+      const summary = [describeUpdate(params.status, t), reschedule].filter((line) => line !== "").join(" ")
       return `${summary}\n\n${formatTodoTaskDetail(t)}`
     })
 }
@@ -245,8 +270,10 @@ export const updateTodoTask = async (params: {
 /**
  * Graph places a repeating task on the first date its pattern allows from the new
  * startDate, which is not always the date asked for: a weekly-on-Saturday task moved
- * to a Monday lands on the next Saturday. Say so, rather than let the caller assume
- * the task is where they put it.
+ * to a Monday lands on the next Saturday. Say where it landed, rather than let the
+ * caller assume the task is where they put it. The pattern is the usual reason but
+ * not the only one (the returned date is in UTC), so the result reports the dates and
+ * the rule without claiming which caused the gap.
  */
 const describeReschedule = (
   requestedDue: string | undefined,
@@ -257,7 +284,7 @@ const describeReschedule = (
   const asked = toDateOnly(requestedDue)
   const landed = task.dueDateTime?.dateTime?.slice(0, 10)
   if (landed === undefined || landed === asked) return ""
-  return `It repeats ${describeRecurrence(task.recurrence)}, so the next occurrence is ${landed}, the first date on that pattern from ${asked}. Pass recurrence to change the pattern.`
+  return `Graph put the task on ${landed}, not ${asked}. It repeats ${describeRecurrence(task.recurrence)}, and To Do moves a repeating task to the first date its pattern allows. Pass recurrence to change the pattern.`
 }
 
 /**

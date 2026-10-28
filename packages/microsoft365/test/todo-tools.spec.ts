@@ -355,7 +355,88 @@ describe("todo-tools", () => {
         Right({ id: "t1", dueDateTime: { dateTime: "2027-01-01T00:00:00.0000000" }, recurrence: QUARTERLY }),
       )
       const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-12-15" })
-      expect(result.value as string).toContain("the next occurrence is 2027-01-01")
+      const text = result.value as string
+      expect(text).toContain("Graph put the task on 2027-01-01, not 2026-12-15.")
+      expect(text).not.toContain("so the next occurrence is")
+    })
+
+    it("refuses a due_date that differs from recurrence.start_date, without calling Graph", async () => {
+      const result = await updateTodoTask({
+        list_id: LIST_ID,
+        task_id: "t1",
+        due_date: "2026-11-06T12:00:00Z",
+        recurrence: { pattern: "daily", start_date: "2026-11-09" },
+      })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("2026-11-06")
+      expect((result.value as Error).message).toContain("2026-11-09")
+      expect(mockClient.getTodoTask).not.toHaveBeenCalled()
+      expect(mockClient.updateTodoTask).not.toHaveBeenCalled()
+    })
+
+    it("accepts a due_date and recurrence.start_date naming the same day", async () => {
+      const tasks = fakeTodoList(repeating())
+      const result = await updateTodoTask({
+        list_id: LIST_ID,
+        task_id: "t1",
+        due_date: "2026-11-06T12:00:00Z",
+        recurrence: { pattern: "daily", start_date: "2026-11-06" },
+      })
+      expect(result.isRight()).toBe(true)
+      expect(dueDates(tasks)).toEqual(["2026-11-06"])
+    })
+
+    it("refuses to move an endDate series past its end, without updating", async () => {
+      fakeTodoList([
+        {
+          ...repeating()[0],
+          recurrence: { ...DAILY, range: { type: "endDate", startDate: "2026-10-30", endDate: "2026-11-03" } },
+        },
+      ])
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-11-06" })
+      expect(result.isLeft()).toBe(true)
+      expect((result.value as Error).message).toContain("stops repeating on 2026-11-03")
+      expect(mockClient.updateTodoTask).not.toHaveBeenCalled()
+    })
+
+    it("moves an endDate series within its end, keeping the end", async () => {
+      const range = { type: "endDate", startDate: "2026-10-30", endDate: "2026-12-31" }
+      fakeTodoList([{ ...repeating()[0], recurrence: { ...DAILY, range } }])
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-11-06" })
+      expect(result.isRight()).toBe(true)
+      expect(mockClient.updateTodoTask).toHaveBeenCalledWith(LIST_ID, "t1", {
+        recurrence: { pattern: DAILY.pattern, range: { ...range, startDate: "2026-11-06" } },
+      })
+    })
+
+    // Graph echoes endDate 0001-01-01 on a noEnd range; that is not an end date.
+    it("moves a noEnd series whose echoed endDate is 0001-01-01", async () => {
+      const range = { type: "noEnd", startDate: "2026-10-30", endDate: "0001-01-01", numberOfOccurrences: 0 }
+      const tasks = fakeTodoList([{ ...repeating()[0], recurrence: { ...DAILY, range } }])
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-11-06" })
+      expect(result.isRight()).toBe(true)
+      expect(dueDates(tasks)).toEqual(["2026-11-06"])
+    })
+
+    it("gives one next-occurrence sentence when completing and moving at once", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", recurrence: QUARTERLY }))
+      mockClient.updateTodoTask.mockResolvedValue(
+        Right({
+          id: "t1",
+          status: "notStarted",
+          dueDateTime: { dateTime: "2027-04-01T00:00:00.0000000" },
+          recurrence: QUARTERLY,
+        }),
+      )
+      const result = await updateTodoTask({
+        list_id: LIST_ID,
+        task_id: "t1",
+        status: "completed",
+        due_date: "2026-12-15",
+      })
+      const text = result.value as string
+      expect(text).toContain("Occurrence completed")
+      expect(text).not.toContain("first date")
     })
 
     it("does not update when the task cannot be read first", async () => {
