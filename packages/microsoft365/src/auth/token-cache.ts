@@ -223,3 +223,45 @@ export const readAuthenticationRecord = (directory = resolveCacheDirectory()): A
 
 export const writeAuthenticationRecord = (record: AuthenticationRecord, directory = resolveCacheDirectory()): void =>
   writeCache(join(directory, RECORD_FILE), serializeAuthenticationRecord(record))
+
+// The fingerprint of the configuration the cache was last used under. See
+// config-fingerprint.ts for why a change drops the cached access token.
+const FINGERPRINT_FILE = "config-fingerprint"
+
+/**
+ * Drops the cached access tokens when the configuration has changed since the cache was
+ * last used, keeping the refresh token so the next call refreshes silently instead of
+ * asking to sign in. Runs before any credential reads the cache. Returns whether the
+ * fingerprint changed.
+ *
+ * A cache that cannot be parsed is left alone: the plugin already discards a corrupt
+ * cache when it reads it, and doing that twice would only duplicate the message.
+ */
+export const dropAccessTokensOnConfigChange = (
+  fingerprint: string,
+  cacheName: string,
+  directory = resolveCacheDirectory(),
+): boolean => {
+  const fingerprintPath = join(directory, FINGERPRINT_FILE)
+  if (readCache(fingerprintPath)?.trim() === fingerprint) return false
+
+  const cachePath = join(directory, cacheFileName(cacheName))
+  const contents = readCache(cachePath)
+  if (contents) {
+    try {
+      const cache = JSON.parse(contents) as { AccessToken?: Record<string, unknown> }
+      if (cache.AccessToken && Object.keys(cache.AccessToken).length > 0) {
+        writeCache(cachePath, JSON.stringify({ ...cache, AccessToken: {} }))
+        console.error(
+          "[Auth] The cached access token was issued under a different server configuration, so it was dropped. " +
+            "The next call refreshes it under the app registration's current permissions, without a sign-in.",
+        )
+      }
+    } catch {
+      // Left for the plugin, which discards an unreadable cache when it reads it.
+    }
+  }
+
+  writeCache(fingerprintPath, fingerprint)
+  return true
+}

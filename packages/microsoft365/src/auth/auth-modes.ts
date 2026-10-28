@@ -17,8 +17,14 @@ import { type Either, Left, Right } from "functype/either"
 import { Try } from "functype/try"
 
 import type { AuthConfig, AuthError } from "../types"
+import { configFingerprint } from "./config-fingerprint"
 import { GRAPH_DEFAULT_SCOPE } from "./scopes"
-import { fileCachePersistencePlugin, readAuthenticationRecord, writeAuthenticationRecord } from "./token-cache"
+import {
+  dropAccessTokensOnConfigChange,
+  fileCachePersistencePlugin,
+  readAuthenticationRecord,
+  writeAuthenticationRecord,
+} from "./token-cache"
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 
@@ -172,6 +178,8 @@ const createInteractiveCredential = (
       ? tryCredential(() => createDeviceCodeCredential(tenantId, clientId), "device code")
       : tryCredential(() => new InteractiveBrowserCredential({ tenantId, clientId, redirectUri }), "interactive")
   }
+
+  dropAccessTokensOnConfigChange(configFingerprint(config), TOKEN_CACHE_NAME)
 
   // Both flows share this: whichever one is used, the resulting token survives a
   // restart, which is the entire point of the interactive mode being usable at all.
