@@ -263,6 +263,109 @@ describe("todo-tools", () => {
     })
   })
 
+  // A fake To Do list that behaves as Graph did live on 2026-10-28, for daily tasks:
+  // a dueDateTime PATCH on a repeating task — with or without a recurrence beside
+  // it — rolls the series forward a day and creates a second task on the requested
+  // date; a recurrence PATCH moves the due date to the range's startDate.
+  const fakeTodoList = (initial: ReadonlyArray<Record<string, unknown>>) => {
+    const tasks = new Map(initial.map((t) => [t.id as string, { ...t }]))
+    const dueOf = (date: string) => ({ dateTime: `${date}T00:00:00.0000000`, timeZone: "UTC" })
+    const nextDay = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) + 864e5).toISOString().slice(0, 10)
+    mockClient.getTodoTask.mockImplementation(async (_list: string, id: string) => Right({ ...tasks.get(id) }))
+    mockClient.updateTodoTask.mockImplementation(async (_list: string, id: string, patch: Record<string, unknown>) => {
+      const task = tasks.get(id)!
+      const due = patch.dueDateTime as { dateTime: string } | undefined
+      if (due && task.recurrence && patch.recurrence !== null) {
+        tasks.set(`${id}-copy`, { ...task, id: `${id}-copy`, dueDateTime: dueOf(due.dateTime.slice(0, 10)) })
+        const current = (task.dueDateTime as { dateTime: string }).dateTime.slice(0, 10)
+        Object.assign(task, { dueDateTime: dueOf(nextDay(current)) })
+        return Right({ ...task })
+      }
+      Object.assign(task, patch)
+      if (due) task.dueDateTime = dueOf(due.dateTime.slice(0, 10))
+      const recurrence = patch.recurrence as { range: { startDate: string } } | null | undefined
+      if (recurrence) task.dueDateTime = dueOf(recurrence.range.startDate)
+      return Right({ ...task })
+    })
+    return tasks
+  }
+
+  const DAILY = { pattern: { type: "daily", interval: 1 }, range: { type: "noEnd", startDate: "2026-10-30" } }
+  const dueDates = (tasks: Map<string, Record<string, unknown>>) =>
+    [...tasks.values()].map((t) => (t.dueDateTime as { dateTime: string }).dateTime.slice(0, 10))
+
+  describe("updateTodoTask rescheduling a repeating task", () => {
+    const repeating = () => [
+      { id: "t1", title: "Water plants", dueDateTime: { dateTime: "2026-10-30T00:00:00.0000000" }, recurrence: DAILY },
+    ]
+
+    it("moves it with due_date alone, without creating a second task", async () => {
+      const tasks = fakeTodoList(repeating())
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-11-06T12:00:00Z" })
+      expect(result.isRight()).toBe(true)
+      expect(dueDates(tasks)).toEqual(["2026-11-06"])
+      expect(mockClient.updateTodoTask.mock.calls[0]![2]).not.toHaveProperty("dueDateTime")
+    })
+
+    it("moves it with due_date and recurrence together, without creating a second task", async () => {
+      const tasks = fakeTodoList(repeating())
+      await updateTodoTask({
+        list_id: LIST_ID,
+        task_id: "t1",
+        due_date: "2026-11-06T12:00:00Z",
+        recurrence: { pattern: "daily" },
+      })
+      expect(dueDates(tasks)).toEqual(["2026-11-06"])
+      expect(mockClient.getTodoTask).not.toHaveBeenCalled()
+    })
+
+    it("keeps the rest of the existing pattern when re-anchoring it", async () => {
+      fakeTodoList([{ ...repeating()[0], recurrence: QUARTERLY }])
+      await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2027-01-01" })
+      expect(mockClient.updateTodoTask).toHaveBeenCalledWith(LIST_ID, "t1", {
+        recurrence: { pattern: QUARTERLY.pattern, range: { type: "noEnd", startDate: "2027-01-01" } },
+      })
+    })
+
+    it("still sends dueDateTime when the recurrence is being cleared", async () => {
+      const tasks = fakeTodoList(repeating())
+      await updateTodoTask({
+        list_id: LIST_ID,
+        task_id: "t1",
+        due_date: "2026-11-06T12:00:00Z",
+        clear_recurrence: true,
+      })
+      expect(dueDates(tasks)).toEqual(["2026-11-06"])
+      expect(mockClient.getTodoTask).not.toHaveBeenCalled()
+    })
+
+    it("sends dueDateTime for a one-off task", async () => {
+      const tasks = fakeTodoList([
+        { id: "t1", title: "Buy milk", dueDateTime: { dateTime: "2026-10-30T00:00:00.0000000" } },
+      ])
+      await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-11-06T12:00:00Z" })
+      expect(dueDates(tasks)).toEqual(["2026-11-06"])
+      expect(mockClient.updateTodoTask.mock.calls[0]![2]).toHaveProperty("dueDateTime")
+    })
+
+    // Graph puts the task on the first date the pattern allows from startDate.
+    it("says where the task landed when the pattern moved it off the asked date", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", recurrence: QUARTERLY }))
+      mockClient.updateTodoTask.mockResolvedValue(
+        Right({ id: "t1", dueDateTime: { dateTime: "2027-01-01T00:00:00.0000000" }, recurrence: QUARTERLY }),
+      )
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-12-15" })
+      expect(result.value as string).toContain("the next occurrence is 2027-01-01")
+    })
+
+    it("does not update when the task cannot be read first", async () => {
+      mockClient.getTodoTask.mockResolvedValue(Left({ message: "ErrorItemNotFound" }))
+      const result = await updateTodoTask({ list_id: LIST_ID, task_id: "t1", due_date: "2026-11-06" })
+      expect(result.isLeft()).toBe(true)
+      expect(mockClient.updateTodoTask).not.toHaveBeenCalled()
+    })
+  })
+
   describe("deleteTodoTask", () => {
     it("should delete a one-off task and name it", async () => {
       mockClient.getTodoTask.mockResolvedValue(Right({ id: "t1", title: "Buy milk" }))

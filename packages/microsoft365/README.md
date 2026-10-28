@@ -539,6 +539,14 @@ completed occurrence becomes a _separate_ task with a new id. The task id you ho
 therefore refers to the live series, not one occurrence, and `update_todo_task` says
 so in its result rather than reporting a bare "Task updated" over a `notStarted` task.
 
+**Moving a repeating task's due date goes through its recurrence.** Graph reads a plain
+due-date change on a repeating task as completing the current occurrence: the series
+rolls forward one period and a second task appears on the new date. So on a repeating
+task `update_todo_task` sends the new date as the recurrence's start date instead, and
+the same task moves. To Do puts it on the first date the pattern allows from there — a
+weekly-on-Saturday task moved to a Monday lands on the next Saturday — and the result
+says so when that happens.
+
 `delete_todo_task` has no undo through the API. Microsoft documents restoring a deleted
 task by hand from Outlook's Deleted Items folder, but that hasn't been checked for tasks
 deleted through Graph, so treat a delete as permanent. Because an id addresses the series, deleting a repeating task ends the whole

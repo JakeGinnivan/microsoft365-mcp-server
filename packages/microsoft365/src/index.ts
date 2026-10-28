@@ -1732,7 +1732,13 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       task_id: z.string().describe("Task ID"),
       title: z.string().optional().describe("New title"),
       status: z.string().optional().describe("Status: notStarted, inProgress, completed, waitingOnOthers, deferred"),
-      due_date: z.string().optional().describe("New due date (ISO format)"),
+      due_date: z
+        .string()
+        .optional()
+        .describe(
+          "New due date (ISO format). On a repeating task this moves the series to start on that date; " +
+            "To Do puts it on the first date the pattern allows from there",
+        ),
       importance: z.string().optional().describe("Importance: low, normal, or high"),
       body: z.string().optional().describe("New body/notes"),
       recurrence: RECURRENCE_PARAM.describe("Replace the repeat pattern"),
