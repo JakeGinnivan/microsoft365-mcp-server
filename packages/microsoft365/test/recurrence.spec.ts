@@ -87,6 +87,17 @@ describe("buildRecurrence", () => {
       expect(buildRecurrence({ pattern: "daily", range_type: "numbered" }, START)).toContain("number_of_occurrences")
     })
 
+    it("should reject an endDate range whose end is before its start", () => {
+      expect(
+        buildRecurrence({ pattern: "daily", range_type: "endDate", start_date: "2027-06-15", end_date: "2027-06-14" }),
+      ).toBe("end_date (2027-06-14) is before the start date (2027-06-15).")
+    })
+
+    it("should accept an endDate range that ends on its start day", () => {
+      const r = buildRecurrence({ pattern: "daily", range_type: "endDate", end_date: START }, START)
+      expect(typeof r).not.toBe("string")
+    })
+
     it("should reject an endDate range with no end date", () => {
       expect(buildRecurrence({ pattern: "daily", range_type: "endDate" }, START)).toContain("end_date")
     })

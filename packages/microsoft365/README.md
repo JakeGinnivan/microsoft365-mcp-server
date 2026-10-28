@@ -545,7 +545,9 @@ rolls forward one period and a second task appears on the new date. So on a repe
 task `update_todo_task` sends the new date as the recurrence's start date instead, and
 the same task moves. To Do puts it on the first date the pattern allows from there — a
 weekly-on-Saturday task moved to a Monday lands on the next Saturday — and the result
-says so when that happens.
+says so when that happens. Passing `due_date` with a different `recurrence.start_date`
+is refused, since both set when the series starts. So is moving a task with an `endDate`
+range past its end date: pass `recurrence` with a later `end_date`, or `clear_recurrence`.
 
 `delete_todo_task` has no undo through the API. Microsoft documents restoring a deleted
 task by hand from Outlook's Deleted Items folder, but that hasn't been checked for tasks
