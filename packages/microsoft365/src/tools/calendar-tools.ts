@@ -17,6 +17,16 @@ const requireClient = () => {
   return client.orThrow()
 }
 
+// Graph calendar IDs are base64 in its URL-safe form. calendar_id goes into the request path, so
+// anything else is refused before it reaches Graph: a "/" or "." would let a caller resolve the
+// path out of /me/calendars, e.g. to /users/{someone}/events, past MS365_ALLOWED_MAILBOXES.
+const CALENDAR_ID = /^[A-Za-z0-9_=+-]+$/
+
+const invalidCalendarId = (calendarId: string | undefined): UserError | undefined =>
+  calendarId === undefined || CALENDAR_ID.test(calendarId)
+    ? undefined
+    : new UserError("calendar_id is not a calendar ID. Use an ID exactly as list_calendars returns it.")
+
 export const listCalendars = async (): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
@@ -35,6 +45,8 @@ export const listEvents = async (params: {
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const badCalendar = invalidCalendarId(params.calendar_id)
+  if (badCalendar) return Left(badCalendar)
 
   if (params.fetch_all_pages) {
     const result = await client.requestPaginated<GraphEvent>(
@@ -68,6 +80,8 @@ export const getEvent = async (params: {
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const badCalendar = invalidCalendarId(params.calendar_id)
+  if (badCalendar) return Left(badCalendar)
 
   // Text by default, unlike get_message: an event body is almost always a Teams invite, whose HTML
   // is layout markup around a join link and the same details the event already carries.
@@ -83,6 +97,8 @@ export const listCalendarView = async (params: {
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const badCalendar = invalidCalendarId(params.calendar_id)
+  if (badCalendar) return Left(badCalendar)
 
   if (!params.start_date_time || !params.end_date_time) {
     return Left(new UserError("start_date_time and end_date_time are required (ISO 8601, e.g. 2026-05-22T00:00:00Z)."))
@@ -117,6 +133,8 @@ export const createEvent = async (params: {
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const badCalendar = invalidCalendarId(params.calendar_id)
+  if (badCalendar) return Left(badCalendar)
 
   const timeZone = params.time_zone ?? "UTC"
   const event: Record<string, unknown> = {
@@ -166,6 +184,8 @@ export const updateEvent = async (params: {
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const badCalendar = invalidCalendarId(params.calendar_id)
+  if (badCalendar) return Left(badCalendar)
 
   const updates: Record<string, unknown> = {}
   const timeZone = params.time_zone ?? "UTC"
@@ -200,6 +220,8 @@ export const deleteEvent = async (params: {
 }): Promise<Either<UserError, string>> => {
   const client = requireClient()
   if (!client) return Left(new UserError("MS 365 client not initialized. Check authentication."))
+  const badCalendar = invalidCalendarId(params.calendar_id)
+  if (badCalendar) return Left(badCalendar)
 
   const result = await client.deleteEvent(params.event_id, params.calendar_id)
   return result
