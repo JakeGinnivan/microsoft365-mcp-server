@@ -4,6 +4,7 @@
 // their results. It is pure apart from the injected `send` and `wait`, so the retry
 // logic can be tested without a mailbox or a clock.
 
+import { parseRetryAfterMs } from "@sapientsai/ms-graph-core"
 import type { Either } from "functype/either"
 
 import type { GraphApiError, GraphBatchResponse } from "../types"
@@ -11,7 +12,7 @@ import type { GraphApiError, GraphBatchResponse } from "../types"
 /** Graph's hard limit on sub-requests per $batch call. */
 export const BATCH_SIZE = 20
 
-/** How many times a throttled (429) or transient (503/504) sub-request is retried. */
+/** How many times a throttled (429) sub-request is sent in all. */
 const MAX_ATTEMPTS = 3
 
 export const chunk = <T>(items: ReadonlyArray<T>, size: number): ReadonlyArray<ReadonlyArray<T>> =>
@@ -50,7 +51,10 @@ export type MoveOutcome = {
   readonly retryAfterMs?: number
 }
 
-const RETRYABLE = new Set([429, 503, 504])
+// Only 429 is retried. A move is a POST, and a 503/504 may come back after Graph has
+// already moved the message; re-sending it then hits a 404 on the old id and reports a
+// moved message as failed. The core resilience layer draws the same line for POST.
+const RETRYABLE = new Set([429])
 
 const headerValue = (headers: Record<string, string> | undefined, name: string): string | undefined => {
   if (!headers) return undefined
@@ -71,8 +75,8 @@ export const parseBatchResponses = (
     if (r.status >= 200 && r.status < 300) return { id, status: r.status }
     const body = r.body as { error?: { code?: string; message?: string } } | undefined
     const error = body?.error ? `${body.error.code ?? ""} ${body.error.message ?? ""}`.trim() : `HTTP ${r.status}`
-    const retryAfter = headerValue(r.headers, "Retry-After")
-    const retryAfterMs = retryAfter !== undefined && /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined
+    // Shared with the core resilience layer: seconds or an HTTP-date, capped at 60 s.
+    const retryAfterMs = parseRetryAfterMs(headerValue(r.headers, "Retry-After")) ?? undefined
     return { id, status: r.status, error, retryAfterMs }
   })
 }

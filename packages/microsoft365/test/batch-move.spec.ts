@@ -56,6 +56,23 @@ describe("parseBatchResponses", () => {
     })
     expect(outcome).toMatchObject({ status: 429, retryAfterMs: 3000 })
   })
+
+  // A Retry-After of an hour would otherwise stall the tool call for an hour per attempt.
+  it("caps Retry-After at 60 seconds", () => {
+    const [outcome] = parseBatchResponses(["a"], {
+      responses: [{ id: "0", status: 429, headers: { "Retry-After": "3600" } }],
+    })
+    expect(outcome!.retryAfterMs).toBe(60_000)
+  })
+
+  it("reads a Retry-After given as an HTTP-date", () => {
+    const at = new Date(Date.now() + 5_000).toUTCString()
+    const [outcome] = parseBatchResponses(["a"], {
+      responses: [{ id: "0", status: 429, headers: { "Retry-After": at } }],
+    })
+    expect(outcome!.retryAfterMs).toBeGreaterThan(0)
+    expect(outcome!.retryAfterMs).toBeLessThanOrEqual(5_000)
+  })
 })
 
 describe("runMoveBatches", () => {
@@ -99,6 +116,17 @@ describe("runMoveBatches", () => {
     expect(result.moved).toEqual([])
     expect(result.failed).toHaveLength(1)
     expect(result.failed[0]!.status).toBe(429)
+  })
+
+  // A move is a POST: a 503/504 can arrive after Graph already moved the message, and
+  // re-sending would 404 on the old id and report a moved message as failed.
+  it.each([503, 504])("does not retry a sub-request that returned %i", async (status) => {
+    const send = vi.fn().mockResolvedValue(Right({ responses: [{ id: "0", status }] }))
+    const wait = vi.fn(async () => undefined)
+    const result = await runMoveBatches(["a"], "/me", "archive", send, wait)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(wait).not.toHaveBeenCalled()
+    expect(result.failed.map((f) => f.status)).toEqual([status])
   })
 
   it("does not retry a non-transient failure", async () => {

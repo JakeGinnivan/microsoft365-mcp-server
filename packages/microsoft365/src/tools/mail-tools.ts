@@ -905,6 +905,10 @@ const DEFAULT_SWEEP_LIMIT = 1000
 const MAX_SWEEP_LIMIT = 20000
 const MAX_SENDERS_PER_SWEEP = 20
 
+// Sender names, addresses and subjects come from whoever sent the mail. Kept to one
+// line, so none of them can forge a line of the preview the caller acts on.
+const oneLine = (value: string, max: number): string => value.replace(/[\r\n]+/g, " ").slice(0, max)
+
 const formatSweepPreview = (
   messages: ReadonlyArray<GraphMessage>,
   meta: { readonly folder: string; readonly filter: string; readonly destination: string },
@@ -917,14 +921,16 @@ const formatSweepPreview = (
   const unread = messages.filter((m) => m.isRead === false).length
 
   const senders = aggregateSenders(messages, "address").slice(0, 10)
-  const senderLines = senders.map((s) => `- ${s.count} from ${s.key}${s.name ? ` (${s.name})` : ""}`)
+  const senderLines = senders.map(
+    (s) => `- ${s.count} from ${oneLine(s.key, 100)}${s.name ? ` (${oneLine(s.name, 80)})` : ""}`,
+  )
 
   const newestTen = [...messages]
     .sort((a, b) => (b.receivedDateTime ?? "").localeCompare(a.receivedDateTime ?? ""))
     .slice(0, 10)
     .map(
       (m) =>
-        `- ${m.receivedDateTime?.slice(0, 10) ?? ""} | ${senderAddress(m)} | ${(m.subject ?? "(No Subject)").replace(/[\r\n]+/g, " ").slice(0, 100)}`,
+        `- ${m.receivedDateTime?.slice(0, 10) ?? ""} | ${oneLine(senderAddress(m), 100)} | ${oneLine(m.subject ?? "(No Subject)", 100)}`,
     )
 
   return [
@@ -1022,7 +1028,10 @@ export const moveMessagesMatching = async (params: {
   // wants to know what did not move, and the listing is capped to stay legible.
   const subjectById = new Map(messages.map((m) => [m.id, m.subject ?? "(No Subject)"]))
   const shown = outcome.failed.slice(0, 20)
-  const failureLines = shown.map((f) => `- FAILED "${subjectById.get(f.id) ?? f.id}": ${f.error}`)
+  const failureLines = shown.map((f) => `- FAILED "${oneLine(subjectById.get(f.id) ?? f.id, 100)}": ${f.error}`)
   const overflow = outcome.failed.length > shown.length ? `\n... and ${outcome.failed.length - shown.length} more` : ""
-  return Right(`${summary}\n\n${outcome.failed.length} failed:\n${failureLines.join("\n")}${overflow}`)
+  const detail = `${summary}\n\n${outcome.failed.length} failed:\n${failureLines.join("\n")}${overflow}`
+  // As in batchMoveMessages: when nothing moved, the result must be an error, or the
+  // caller reports the sweep as done. A partial success stays Right.
+  return outcome.moved.length === 0 ? Left(new UserError(detail)) : Right(detail)
 }
