@@ -129,7 +129,9 @@ const buildRange = (input: RecurrenceInput, fallbackStart?: string): GraphRecurr
 
     case "endDate": {
       if (!input.end_date) return "A range_type of 'endDate' requires end_date."
-      return { type: "endDate", startDate, endDate: toDateOnly(input.end_date) }
+      const endDate = toDateOnly(input.end_date)
+      if (endDate < startDate) return `end_date (${endDate}) is before the start date (${startDate}).`
+      return { type: "endDate", startDate, endDate }
     }
 
     case "numbered": {

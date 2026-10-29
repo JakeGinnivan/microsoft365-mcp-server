@@ -7,7 +7,7 @@ import { getGraphClient } from "../client/graph-client"
 import type { GraphApiError, GraphTodoList, GraphTodoTask, ODataResponse } from "../types"
 import { formatTodoListList, formatTodoTaskDetail, formatTodoTaskList } from "../utils/formatters"
 import type { RecurrenceInput } from "../utils/recurrence"
-import { buildRecurrence, describeRecurrence } from "../utils/recurrence"
+import { buildRecurrence, describeRecurrence, toDateOnly } from "../utils/recurrence"
 
 const requireClient = () => {
   const client = getGraphClient()
@@ -190,10 +190,21 @@ export const updateTodoTask = async (params: {
     return Left(new UserError("Pass either recurrence or clear_recurrence, not both."))
   }
 
+  // On a repeating task both dates set where the series starts, so two different
+  // ones leave no right answer. Refuse rather than let one silently win.
+  const startDate = params.recurrence?.start_date
+  if (params.due_date && startDate && toDateOnly(params.due_date) !== toDateOnly(startDate)) {
+    return Left(
+      new UserError(
+        `due_date (${toDateOnly(params.due_date)}) and recurrence.start_date (${toDateOnly(startDate)}) differ. ` +
+          "On a repeating task both set when it starts, so pass one, or the same date in both.",
+      ),
+    )
+  }
+
   const updates: Record<string, unknown> = {}
   if (params.title) updates.title = params.title
   if (params.status) updates.status = params.status
-  if (params.due_date) updates.dueDateTime = { dateTime: params.due_date, timeZone: "UTC" }
   if (params.importance) updates.importance = params.importance
   if (params.body) updates.body = { contentType: "text", content: params.body }
 
@@ -207,10 +218,73 @@ export const updateTodoTask = async (params: {
     updates.recurrence = recurrence
   }
 
+  // A dueDateTime PATCH on a repeating task does not move it. Graph treats it as
+  // completing the current occurrence: the series rolls forward one period and a
+  // second task appears on the requested date — with or without a recurrence in the
+  // same PATCH (checked live 2026-10-28). Moving the recurrence's startDate moves the
+  // due date instead, on the same task. So on a repeating task the new date travels
+  // as the startDate and dueDateTime is never sent.
+  if (params.due_date && !params.clear_recurrence) {
+    if (!params.recurrence) {
+      const existing = await client.getTodoTask(params.list_id, params.task_id)
+      if (existing.isLeft()) {
+        return Left(
+          new UserError(`Failed to read the task before updating: ${(existing.value as GraphApiError).message}`),
+        )
+      }
+      const { recurrence } = existing.value as GraphTodoTask
+      if (recurrence) {
+        const newStart = toDateOnly(params.due_date)
+        // Graph echoes an endDate of 0001-01-01 on noEnd ranges, so only an endDate
+        // range has an end worth checking.
+        const { range } = recurrence
+        if (range.type === "endDate" && range.endDate !== undefined && range.endDate < newStart) {
+          return Left(
+            new UserError(
+              `This task stops repeating on ${range.endDate}, before ${newStart}. Pass recurrence with a later ` +
+                "end_date to move it, or clear_recurrence to make it one-off.",
+            ),
+          )
+        }
+        updates.recurrence = { ...recurrence, range: { ...range, startDate: newStart } }
+      } else {
+        updates.dueDateTime = { dateTime: params.due_date, timeZone: "UTC" }
+      }
+    }
+  } else if (params.due_date) {
+    updates.dueDateTime = { dateTime: params.due_date, timeZone: "UTC" }
+  }
+
   const result = await client.updateTodoTask(params.list_id, params.task_id, updates)
   return result
     .mapLeft((error) => new UserError(`Failed to update task: ${error.message}`))
-    .map((t) => `${describeUpdate(params.status, t)}\n\n${formatTodoTaskDetail(t)}`)
+    .map((t) => {
+      // Completing a repeating task already reports the next occurrence, so a
+      // second sentence about where the move landed could only contradict it.
+      const reschedule = params.status === "completed" ? "" : describeReschedule(params.due_date, updates, t)
+      const summary = [describeUpdate(params.status, t), reschedule].filter((line) => line !== "").join(" ")
+      return `${summary}\n\n${formatTodoTaskDetail(t)}`
+    })
+}
+
+/**
+ * Graph places a repeating task on the first date its pattern allows from the new
+ * startDate, which is not always the date asked for: a weekly-on-Saturday task moved
+ * to a Monday lands on the next Saturday. Say where it landed, rather than let the
+ * caller assume the task is where they put it. The pattern is the usual reason but
+ * not the only one (the returned date is in UTC), so the result reports the dates and
+ * the rule without claiming which caused the gap.
+ */
+const describeReschedule = (
+  requestedDue: string | undefined,
+  updates: Record<string, unknown>,
+  task: GraphTodoTask,
+): string => {
+  if (!requestedDue || updates.dueDateTime !== undefined || !task.recurrence) return ""
+  const asked = toDateOnly(requestedDue)
+  const landed = task.dueDateTime?.dateTime?.slice(0, 10)
+  if (landed === undefined || landed === asked) return ""
+  return `Graph put the task on ${landed}, not ${asked}. It repeats ${describeRecurrence(task.recurrence)}, and To Do moves a repeating task to the first date its pattern allows. Pass recurrence to change the pattern.`
 }
 
 /**

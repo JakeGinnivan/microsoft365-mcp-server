@@ -189,6 +189,7 @@ const resolveAuthConfig = (): AuthConfig => {
         clientId,
         redirectUri: process.env.MS365_REDIRECT_URI,
         useDeviceCode: process.env.MS365_USE_DEVICE_CODE === "true",
+        disableSignIn: process.env.MS365_DISABLE_SIGN_IN === "true",
       }
   }
 }
@@ -278,7 +279,10 @@ const RECURRENCE_PARAM = z
       .describe("Which week of the month, for the relative patterns. Default first"),
     first_day_of_week: z.enum(DAYS_OF_WEEK).optional().describe("For weekly patterns. Default monday"),
     range_type: z.enum(RECURRENCE_RANGE_TYPES).optional().describe("noEnd (default), endDate, or numbered"),
-    start_date: z.string().optional().describe("YYYY-MM-DD. Defaults to the task's due date"),
+    start_date: z
+      .string()
+      .optional()
+      .describe("YYYY-MM-DD. Defaults to the task's due date. On update, must match due_date if both are given"),
     end_date: z.string().optional().describe("YYYY-MM-DD. Required when range_type is endDate"),
     number_of_occurrences: z.number().int().positive().optional().describe("Required when range_type is numbered"),
     recurrence_time_zone: z.string().optional().describe("Time zone for the range, e.g. 'W. Australia Standard Time'"),
@@ -1732,7 +1736,13 @@ const toolDefinitions: ReadonlyArray<ToolDefinition> = [
       task_id: z.string().describe("Task ID"),
       title: z.string().optional().describe("New title"),
       status: z.string().optional().describe("Status: notStarted, inProgress, completed, waitingOnOthers, deferred"),
-      due_date: z.string().optional().describe("New due date (ISO format)"),
+      due_date: z
+        .string()
+        .optional()
+        .describe(
+          "New due date (ISO format). On a repeating task this moves the series to start on that date; " +
+            "To Do puts it on the first date the pattern allows from there. Must match recurrence.start_date if both are given",
+        ),
       importance: z.string().optional().describe("Importance: low, normal, or high"),
       body: z.string().optional().describe("New body/notes"),
       recurrence: RECURRENCE_PARAM.describe("Replace the repeat pattern"),

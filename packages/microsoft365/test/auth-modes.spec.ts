@@ -245,6 +245,48 @@ describe("interactive authentication mode", () => {
       })
     })
 
+    // An unattended host has nobody to enter a device code; waiting for one only stalls it.
+    describe("with sign-in disabled", () => {
+      const unattended = { ...config, useDeviceCode: true, disableSignIn: true }
+
+      it("fails at once instead of prompting", async () => {
+        writeAuthenticationRecord(record, cacheDir.path)
+        vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockRejectedValue(required())
+        const authenticate = vi.spyOn(DeviceCodeCredential.prototype, "authenticate")
+        const credential = createCredential(unattended).value as TokenCredential
+
+        const failure = await credential.getToken("scope").catch((e: unknown) => e)
+        expect(failure).toBeInstanceOf(Error)
+        expect((failure as Error).message).toContain("the saved sign-in could not be reused")
+        expect((failure as Error).message).toContain("MS365_DISABLE_SIGN_IN")
+        expect((failure as Error).cause).toBeInstanceOf(AuthenticationRequiredError)
+        expect(authenticate).not.toHaveBeenCalled()
+      })
+
+      it("applies to the browser flow too", async () => {
+        vi.spyOn(InteractiveBrowserCredential.prototype, "getToken").mockRejectedValue(required())
+        const authenticate = vi.spyOn(InteractiveBrowserCredential.prototype, "authenticate")
+        const credential = createCredential({ ...config, disableSignIn: true }).value as TokenCredential
+
+        await expect(credential.getToken("scope")).rejects.toThrow("there is no saved sign-in")
+        expect(authenticate).not.toHaveBeenCalled()
+      })
+
+      it("still serves tokens from the cache", async () => {
+        vi.spyOn(DeviceCodeCredential.prototype, "getToken").mockResolvedValue(token)
+        const credential = createCredential(unattended).value as TokenCredential
+
+        await expect(credential.getToken("scope")).resolves.toBe(token)
+      })
+
+      it("is refused when the token cache is off, since every start would need a sign-in", () => {
+        vi.stubEnv("MS365_TOKEN_CACHE", "false")
+        const result = createCredential(unattended)
+        expect(result.isLeft()).toBe(true)
+        expect((result.value as { message: string }).message).toContain("MS365_TOKEN_CACHE=false")
+      })
+    })
+
     it("ignores a stored record missing its account fields", () => {
       writeAuthenticationRecord({ ...record, homeAccountId: "" }, cacheDir.path)
       expect(readAuthenticationRecord(cacheDir.path)).toBeUndefined()

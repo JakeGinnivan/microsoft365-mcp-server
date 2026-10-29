@@ -96,6 +96,13 @@ change here, such as a new `MS365_ALLOWED_MAILBOXES` entry. A permission granted
 in Azure with no change here still reaches the server only when the cached token
 expires, within about an hour, or after the cache directory is deleted.
 
+When the server is launched unattended, by an agent gateway or a scheduled job,
+nobody is there to enter a device code, and a sign-in prompt just blocks until the
+host gives up. Set `MS365_DISABLE_SIGN_IN=true` and the server exits at startup with
+an `[Auth] Sign-in required` error instead whenever the cached sign-in cannot be
+reused. Sign in once by running the server without it, then put it back. It needs
+the token cache, so it cannot be combined with `MS365_TOKEN_CACHE=false`.
+
 ### Client Secret
 
 For service accounts and automation.
@@ -548,6 +555,16 @@ completed occurrence becomes a _separate_ task with a new id. The task id you ho
 therefore refers to the live series, not one occurrence, and `update_todo_task` says
 so in its result rather than reporting a bare "Task updated" over a `notStarted` task.
 
+**Moving a repeating task's due date goes through its recurrence.** Graph reads a plain
+due-date change on a repeating task as completing the current occurrence: the series
+rolls forward one period and a second task appears on the new date. So on a repeating
+task `update_todo_task` sends the new date as the recurrence's start date instead, and
+the same task moves. To Do puts it on the first date the pattern allows from there — a
+weekly-on-Saturday task moved to a Monday lands on the next Saturday — and the result
+says so when that happens. Passing `due_date` with a different `recurrence.start_date`
+is refused, since both set when the series starts. So is moving a task with an `endDate`
+range past its end date: pass `recurrence` with a later `end_date`, or `clear_recurrence`.
+
 `delete_todo_task` has no undo through the API. Microsoft documents restoring a deleted
 task by hand from Outlook's Deleted Items folder, but that hasn't been checked for tasks
 deleted through Graph, so treat a delete as permanent. Because an id addresses the series, deleting a repeating task ends the whole
@@ -584,6 +601,7 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 | `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                                                                 | --                  |
 | `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                                                                  | --                  |
 | `MS365_USE_DEVICE_CODE`   | Skip the browser in `interactive` mode and use device code                                                                      | `false`             |
+| `MS365_DISABLE_SIGN_IN`   | In `interactive` mode, fail instead of prompting when the cached sign-in cannot be reused                                       | `false`             |
 | `MS365_TOKEN_CACHE`       | Persist the `interactive` token cache to disk; `false` keeps it in memory only                                                  | `true`              |
 | `MS365_TOKEN_CACHE_PATH`  | Directory for the persisted token cache and account record                                                                      | `~/.config/...`     |
 | `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                                                                   | --                  |
