@@ -111,9 +111,15 @@ const createDeviceCodeCredential = (
 // record, a scope change or an expired refresh token all look the same: "it asked me to
 // sign in again". Identity replaces the underlying reason with a generic message when it
 // throws, and only writes the original to its own logger, hence the AZURE_LOG_LEVEL hint.
+//
+// With disableSignIn the refusal is final. A host that launches the server unattended
+// (an agent gateway, a scheduled job) has nobody to read the device code or click
+// through the browser, so authenticate() would just block until the host's own startup
+// timeout. Failing at once lets the host carry on without these tools and report why.
 const signInWhenRequired = (
   credential: InteractiveBrowserCredential | DeviceCodeCredential,
   hadRecord: boolean,
+  disableSignIn = false,
 ): TokenCredential => {
   // Parallel Graph calls can all miss the cache at once; they share one sign-in rather
   // than each prompting separately.
@@ -130,6 +136,13 @@ const signInWhenRequired = (
         return await credential.getToken(scopes, options)
       } catch (error) {
         if (!(error instanceof AuthenticationRequiredError)) throw error
+        if (disableSignIn) {
+          throw new Error(
+            `[Auth] Sign-in required: ${hadRecord ? "the saved sign-in could not be reused" : "there is no saved sign-in"}, ` +
+              "and MS365_DISABLE_SIGN_IN is set, so none was started. Run the server once without it to sign in.",
+            { cause: error },
+          )
+        }
         if (hadRecord) {
           console.error(
             "[Auth] Cached credentials could not be reused, so signing in again. " +
@@ -168,6 +181,13 @@ const createInteractiveCredential = (
   const redirectUri = config.redirectUri ?? DEFAULT_REDIRECT_URI
 
   if (!enableTokenCachePersistence()) {
+    // Without the cache every start needs a sign-in, so refusing one would never work.
+    if (config.disableSignIn) {
+      return Left<AuthError, TokenCredential>({
+        type: "config",
+        message: "MS365_DISABLE_SIGN_IN needs the token cache; it cannot be combined with MS365_TOKEN_CACHE=false",
+      })
+    }
     return config.useDeviceCode
       ? tryCredential(() => createDeviceCodeCredential(tenantId, clientId), "device code")
       : tryCredential(() => new InteractiveBrowserCredential({ tenantId, clientId, redirectUri }), "interactive")
@@ -182,10 +202,11 @@ const createInteractiveCredential = (
     disableAutomaticAuthentication: true,
   }
   const hadRecord = authenticationRecord !== undefined
+  const disableSignIn = config.disableSignIn ?? false
 
   if (config.useDeviceCode) {
     return tryCredential(
-      () => signInWhenRequired(createDeviceCodeCredential(tenantId, clientId, persistence), hadRecord),
+      () => signInWhenRequired(createDeviceCodeCredential(tenantId, clientId, persistence), hadRecord, disableSignIn),
       "device code",
     )
   }
@@ -195,6 +216,7 @@ const createInteractiveCredential = (
       signInWhenRequired(
         new InteractiveBrowserCredential({ tenantId, clientId, redirectUri, ...persistence }),
         hadRecord,
+        disableSignIn,
       ),
     "interactive",
   )

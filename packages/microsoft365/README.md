@@ -87,6 +87,13 @@ used. Set `MS365_TOKEN_CACHE=false` to keep tokens in memory only, or
 `MS365_TOKEN_CACHE_PATH` at a mounted volume, or the cache is lost when the
 container is rebuilt.
 
+When the server is launched unattended, by an agent gateway or a scheduled job,
+nobody is there to enter a device code, and a sign-in prompt just blocks until the
+host gives up. Set `MS365_DISABLE_SIGN_IN=true` and the server exits at startup with
+an `[Auth] Sign-in required` error instead whenever the cached sign-in cannot be
+reused. Sign in once by running the server without it, then put it back. It needs
+the token cache, so it cannot be combined with `MS365_TOKEN_CACHE=false`.
+
 ### Client Secret
 
 For service accounts and automation.
@@ -585,6 +592,7 @@ All list tools support `fetch_all_pages: true` to automatically follow `@odata.n
 | `MS365_CERT_PASSWORD`     | Certificate password (optional)                                                                                                 | --                  |
 | `MS365_ACCESS_TOKEN`      | Initial access token (for `client-token` mode)                                                                                  | --                  |
 | `MS365_USE_DEVICE_CODE`   | Skip the browser in `interactive` mode and use device code                                                                      | `false`             |
+| `MS365_DISABLE_SIGN_IN`   | In `interactive` mode, fail instead of prompting when the cached sign-in cannot be reused                                       | `false`             |
 | `MS365_TOKEN_CACHE`       | Persist the `interactive` token cache to disk; `false` keeps it in memory only                                                  | `true`              |
 | `MS365_TOKEN_CACHE_PATH`  | Directory for the persisted token cache and account record                                                                      | `~/.config/...`     |
 | `MS365_OAUTH_BASE_URL`    | Base URL for OAuth proxy mode                                                                                                   | --                  |

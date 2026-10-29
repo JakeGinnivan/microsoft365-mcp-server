@@ -38,6 +38,7 @@ Environment Variables:
   MS365_CERT_PASSWORD  Certificate password (optional, for certificate mode)
   MS365_ACCESS_TOKEN   Initial access token (for client-token mode)
   MS365_USE_DEVICE_CODE Skip the browser in interactive mode, use device code
+  MS365_DISABLE_SIGN_IN Fail instead of prompting when the cached sign-in can't be reused
   MS365_GRAPH_VERSION  Graph API version: v1.0 or beta (default: v1.0)
   TRANSPORT_TYPE       Transport type: stdio (default) or httpStream
   PORT                 HTTP server port (default: 3000)
