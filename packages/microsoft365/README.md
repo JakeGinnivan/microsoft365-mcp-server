@@ -87,6 +87,15 @@ used. Set `MS365_TOKEN_CACHE=false` to keep tokens in memory only, or
 `MS365_TOKEN_CACHE_PATH` at a mounted volume, or the cache is lost when the
 container is rebuilt.
 
+A cached access token is dropped when the server's configuration changes: any
+`MS365_*` or `GRAPH_*` variable (secrets aside), the tenant, or the client ID. The
+refresh token is kept, so the next call gets a new access token silently, under
+the app registration's current permissions. This covers the common case of
+granting a permission in Azure, such as `Mail.ReadWrite.Shared`, together with a
+change here, such as a new `MS365_ALLOWED_MAILBOXES` entry. A permission granted
+in Azure with no change here still reaches the server only when the cached token
+expires, within about an hour, or after the cache directory is deleted.
+
 When the server is launched unattended, by an agent gateway or a scheduled job,
 nobody is there to enter a device code, and a sign-in prompt just blocks until the
 host gives up. Set `MS365_DISABLE_SIGN_IN=true` and the server exits at startup with

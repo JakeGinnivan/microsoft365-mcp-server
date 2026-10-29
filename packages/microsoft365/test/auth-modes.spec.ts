@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -12,7 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createCredential } from "../src/auth/auth-modes"
-import { readAuthenticationRecord, writeAuthenticationRecord } from "../src/auth/token-cache"
+import { createFileCachePlugin, readAuthenticationRecord, writeAuthenticationRecord } from "../src/auth/token-cache"
 
 const config = { mode: "interactive" as const, tenantId: "common", clientId: "11111111-1111-1111-1111-111111111111" }
 const token = { token: "test-token", expiresOnTimestamp: 1_000 }
@@ -65,6 +65,45 @@ describe("interactive authentication mode", () => {
     expect(deviceToken).toHaveBeenCalledTimes(2)
     expect(deviceToken.mock.contexts).toEqual([credential, credential])
     expect(browserToken).not.toHaveBeenCalled()
+  })
+
+  describe("after a configuration change", () => {
+    const seedCache = async () =>
+      createFileCachePlugin("microsoft365-mcp-server", cacheDir.path).afterCacheAccess({
+        cacheHasChanged: true,
+        tokenCache: {
+          serialize: () => JSON.stringify({ AccessToken: { at: {} }, RefreshToken: { rt: {} } }),
+          deserialize: () => undefined,
+        },
+      } as never)
+    const cached = () => {
+      const file = readdirSync(cacheDir.path).find((f) => f.startsWith("microsoft365-mcp-server."))!
+      return JSON.parse(readFileSync(join(cacheDir.path, file), "utf8")) as Record<string, object>
+    }
+
+    it("drops the cached access token and keeps the refresh token", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined)
+      vi.stubEnv("MS365_ALLOWED_MAILBOXES", "a@example.com")
+      createCredential(config)
+      await seedCache()
+
+      vi.stubEnv("MS365_ALLOWED_MAILBOXES", "a@example.com,b@example.com")
+      createCredential(config)
+      expect(cached()).toEqual({ AccessToken: {}, RefreshToken: { rt: {} } })
+    })
+
+    it("keeps the cached access token when nothing changed", async () => {
+      createCredential(config)
+      await seedCache()
+      createCredential(config)
+      expect(cached().AccessToken).toEqual({ at: {} })
+    })
+
+    it("does not touch the disk when the token cache is off", () => {
+      vi.stubEnv("MS365_TOKEN_CACHE", "false")
+      createCredential(config)
+      expect(existsSync(join(cacheDir.path, "config-fingerprint"))).toBe(false)
+    })
   })
 
   it("propagates browser errors without starting another authentication flow", async () => {
