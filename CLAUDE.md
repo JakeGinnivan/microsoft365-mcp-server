@@ -8,9 +8,9 @@ This is a TypeScript library template designed to be cloned/forked for creating 
 
 **Template Usage**: See STANDARDIZATION_GUIDE.md for applying this pattern to other TypeScript projects.
 
-## Environment variable compatibility
+## Agent rules
 
-When adding or changing tools, routes, scripts, authentication, or Graph requests, follow the [environment variable compatibility rules in AGENTS.md](AGENTS.md#environment-variable-compatibility).
+Follow [AGENTS.md](AGENTS.md) when adding or changing tools, routes, scripts, authentication, or Graph requests. It covers environment variable compatibility, Graph write safety (what may be retried), untrusted text in tool output, URL checks, result shape, and how PRs are reviewed and merged.
 
 ## Development Commands
 

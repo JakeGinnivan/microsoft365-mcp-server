@@ -10,3 +10,32 @@ When adding or changing tools, HTTP routes, scripts, authentication, or Graph re
 - Reuse the existing authentication configuration, Graph version resolver, and shared resilience layer instead of hardcoding alternatives. Preserve operation safety when deciding which failures can be retried.
 - Add regression coverage demonstrating that applicable restrictions block the operation and configured values reach the request. Include alternate entry points affected by the change.
 - Update the package README when intentionally changing the configuration contract.
+
+## Graph write safety
+
+- Retry a write (POST, PATCH, PUT, DELETE) only on 429. On a 503, 504, timeout or network error the write may already have run, so a retry can repeat it or report a finished change as failed. This holds for `$batch` sub-requests too: judge each by its own method and status. GET is retried as the core resilience layer allows.
+- Read `Retry-After` with core's `parseRetryAfterMs`, which handles seconds and HTTP-dates and caps the wait at 60 s. Don't parse it by hand or sleep for an uncapped value.
+- Build retries on the shared `request` / `resilientFetch` path rather than writing a new loop. If a tool needs its own loop (for example over batch sub-responses), apply the same rules as `packages/core/src/resilience.ts`.
+- Give `$batch` sub-requests positional ids (`"0"`, `"1"`, ...). Graph compares batch ids case-insensitively, and message ids are base64, so two ids differing only by case fail the whole batch.
+- `$select` the fields a list needs. Some endpoints return large payloads by default; attachment lists, for example, include each file's base64 `contentBytes`.
+
+## Untrusted text in tool output
+
+Mail subjects, sender names and addresses, file and attachment names, and link URLs are chosen by whoever sent or shared the item. The model reads tool output as the server's own words, so:
+
+- Collapse CR/LF to a space and cap the length before putting such text in output (and strip `|` in pipe-separated rows). See `cell` in `src/mail/sender-summary.ts` and `oneLine` in `src/tools/mail-tools.ts`.
+- Never let it sit where it could pass for one of the tool's own lines, such as a preview's closing "Re-run with dry_run: false" instruction.
+- Show a URL only if it parses as `http:` or `https:`, and print the parsed `url.href`, not the raw string.
+- Add a test that feeds a newline-bearing value through and checks the output's line structure.
+
+## Paths and URLs
+
+- Check a Graph URL's target by parsing it with `new URL(url, base)` and comparing its `origin` before reading the path. Don't split the raw string. Leading whitespace, repeated or back slashes, and encoded `%2f` all change what Graph resolves. `mailboxOfUrl` in `src/mail/mailbox-path.ts` is the reference.
+
+## Results
+
+- When an operation changes nothing (every item failed, the batch call failed, the breaker was open), return a `Left` / `UserError` so the MCP result carries `isError`. A partial success stays `Right`, with the failures listed. Otherwise the caller reports work as done that never happened.
+
+## Pull requests
+
+- Every PR gets a pre-merge review, and the reviewed commit is what merges. After a review, add commits on top. Don't rebase or force-push, or the review no longer matches the head. If a maintainer has pushed to your branch, `git pull` before adding more.
