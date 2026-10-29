@@ -21,6 +21,8 @@ export type AuthConfig =
       readonly redirectUri?: string
       /** Skip the browser and go straight to device code (MS365_USE_DEVICE_CODE). */
       readonly useDeviceCode?: boolean
+      /** Fail instead of starting a sign-in when the cache cannot serve a token (MS365_DISABLE_SIGN_IN). */
+      readonly disableSignIn?: boolean
     }
   | {
       readonly mode: "certificate"

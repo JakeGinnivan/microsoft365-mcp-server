@@ -189,6 +189,7 @@ const resolveAuthConfig = (): AuthConfig => {
         clientId,
         redirectUri: process.env.MS365_REDIRECT_URI,
         useDeviceCode: process.env.MS365_USE_DEVICE_CODE === "true",
+        disableSignIn: process.env.MS365_DISABLE_SIGN_IN === "true",
       }
   }
 }
