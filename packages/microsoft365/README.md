@@ -450,6 +450,17 @@ proxy mode, or as a delegated permission on the app registration otherwise. An e
 a shared calendar is only found through that calendar, so pass `calendar_id` to
 `get_event`, `update_event` and `delete_event` too.
 
+`create_event` and `update_event` take `all_day`. With it, `start` and `end` are dates
+(`YYYY-MM-DD`) and `end` is the last day, inclusive, defaulting to `start`; the server sends
+Graph its midnight-to-midnight span with the exclusive end. Pass `time_zone` (for example
+`Australia/Perth`): Graph pins an all-day event to midnight in that zone, so the UTC default
+shows it a day out elsewhere.
+
+Both also take `show_as` (`free`, `tentative`, `busy`, `oof`, `workingElsewhere`). Left out,
+it follows Outlook rather than Graph: an all-day event is `free` (Graph would make it `busy`
+and block the whole day in free/busy), a timed one stays `busy`, and `update_event` switches
+it when `all_day` changes.
+
 ### Contacts (7 tools)
 
 | Tool              | Description                                                   |
