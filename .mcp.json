@@ -2,7 +2,7 @@
   "mcpServers": {
     "microsoft365": {
       "command": "node",
-      "args": ["./packages/microsoft365/dist/index.js"],
+      "args": ["./packages/microsoft365/dist/bin.js"],
       "env": {
         "MS365_AUTH_MODE": "${MS365_AUTH_MODE:-interactive}",
         "MS365_ORG_MODE": "${MS365_ORG_MODE:-true}"
